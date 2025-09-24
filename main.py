@@ -8,15 +8,17 @@ async def main():
     client = WikipediaClient()
 
     # Search for articles
-    results = await client.search("python programing", suggestion=True)
+    results = await client.search("python", suggestion=True)
     # pprint(results)
     print("Search results:")
     for result in results:
-        print(f"- {result.title}")
+        print(f"- {result.title} ({result.page_id})")
+        print(f" Summary: {result.snippet}")
+        print("=" * 20)
     print(f"Suggestion: {results.suggestion}")
 
     # Get page content
-    # page = await client.get_page("Python (programming language)")
+    # page = await client.get_page(page_id=21356332)
     # print(f"Title: {page.title}")
     # print(f"Summary: {page.summary[:200]}...")
 

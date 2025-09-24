@@ -6,6 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field, validator, HttpUrl
+import re
 
 
 class Coordinates(BaseModel):
@@ -46,6 +47,17 @@ class SearchResult(BaseModel):
     word_count: Optional[int] = Field(None, description="Number of words in the page")
     size: Optional[int] = Field(None, description="Page size in bytes")
     timestamp: Optional[datetime] = Field(None, description="Last modification time")
+
+    # remove all span tags from snippet
+    @validator("snippet", pre=True, always=True)
+    def clean_snippet(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        # Remove HTML tags
+        clean = re.sub(r"<[^>]*>", "", v)
+        # Replace multiple spaces with a single space
+        clean = re.sub(r"\s+", " ", clean).strip()
+        return clean
 
 
 class PageSummary(BaseModel):
@@ -136,17 +148,15 @@ class BatchResult(BaseModel):
         """Iterate over all pages, yielding successful pages first, then failed."""
         for page in self.successful:
             yield page
-        for error in self.failed:
-            yield error
 
     def __len__(self):
         """Total number of results (successful + failed)."""
-        return len(self.successful) + len(self.failed)
+        return len(self.successful)
 
     # slice
     def __getitem__(self, index):
         """Support indexing and slicing."""
-        combined = self.successful + self.failed
+        combined = self.successful
         return combined[index]
 
 
