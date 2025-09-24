@@ -142,12 +142,13 @@ class BatchResult(BaseModel):
     def __len__(self):
         """Total number of results (successful + failed)."""
         return len(self.successful) + len(self.failed)
-    
+
     # slice
     def __getitem__(self, index):
         """Support indexing and slicing."""
         combined = self.successful + self.failed
         return combined[index]
+
 
 class RandomPageResult(BaseModel):
     """Result from random page request."""
@@ -164,6 +165,34 @@ class SuggestionResult(BaseModel):
     results: List[SearchResult] = Field(
         default_factory=list, description="Search results"
     )
+
+    def __iter__(self):
+        """Iterate over search results."""
+        for result in self.results:
+            yield result
+
+    def __len__(self):
+        """Number of search results."""
+        return len(self.results)
+
+    def __getitem__(self, index):
+        """Support indexing and slicing of results."""
+        return self.results[index]
+
+    def __contains__(self, item):
+        """Check if a SearchResult with the given title exists in results."""
+        return any(
+            (
+                result.title == item
+                if isinstance(item, str)
+                else (
+                    item.title
+                    if isinstance(item, SearchResult)
+                    else False and result == item
+                )
+            )
+            for result in self.results
+        )
 
 
 class APIResponse(BaseModel):
