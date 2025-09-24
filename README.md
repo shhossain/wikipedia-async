@@ -65,9 +65,6 @@ config = ClientConfig(
 client = WikipediaClient(config=config)
 ```
 
-See Docs [Here](docs)
+See Docs [Here](https://github.com/shhossain/wikipedia-async/blob/main/docs/DOCUMENTATION.md)
 
-See Examples [Here](examples)
-
-
-
+See Examples [Here](https://github.com/shhossain/wikipedia-async/blob/main/examples)

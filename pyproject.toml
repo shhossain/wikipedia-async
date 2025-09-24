@@ -7,7 +7,9 @@ license = "MIT"
 authors = [
     { name = "shhossain", email = "hossain0338@gmail.com" }
 ]
-url = "https://github.com/shhossain/wikipedia-async"
+Homepage  = "https://github.com/shhossain/wikipedia-async"
+Repository = "https://github.com/shhossain/wikipedia-async"
+Documentation = "https://github.com/shhossain/wikipedia-async/blob/main/docs/DOCUMENTATION.md"
 license-files = ["LICENSE"]
 keywords = ["wikipedia", "async", "api", "client", "aiohttp", "pydantic"]
 classifiers = [
