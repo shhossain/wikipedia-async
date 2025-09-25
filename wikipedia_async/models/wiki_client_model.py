@@ -187,6 +187,45 @@ class BatchResult(BaseModel):
         combined = self.successful
         return combined[index]
 
+class HTMLResult(BaseModel):
+    title: str = Field(..., description="Page title")
+    html: str = Field(..., description="HTML content of the page")
+
+
+class BatchHTMLResult(BaseModel):
+    """Result from batch HTML retrieval."""
+
+    successful: list[HTMLResult] = Field(
+        default_factory=list, description="Successfully retrieved HTML contents"
+    )
+    failed: List[Dict[str, Any]] = Field(
+        default_factory=list, description="Failed requests with errors"
+    )
+    total_requested: int = Field(..., description="Total number of pages requested")
+
+    @property
+    def success_rate(self) -> float:
+        """Calculate success rate as a percentage."""
+        if self.total_requested == 0:
+            return 0.0
+        return (len(self.successful) / self.total_requested) * 100
+
+    # add a iter
+    def __iter__(self):
+        """Iterate over all pages, yielding successful pages first, then failed."""
+        for page in self.successful:
+            yield page
+
+    def __len__(self):
+        """Total number of results (successful + failed)."""
+        return len(self.successful)
+
+    # slice
+    def __getitem__(self, index):
+        """Support indexing and slicing."""
+        combined = self.successful
+        return combined[index]
+
 
 class RandomPageResult(BaseModel):
     """Result from random page request."""

@@ -119,6 +119,13 @@ async def language_switching_example():
         for result in fr_results:
             print(f"  {result.title}")
 
+        # Or set it as a parameter (support in get_page, get_summary, etc)
+        res = await client.search("Inteligencia artificial", limit=3, lang="es")
+        es_results = res.results
+        print("\nSpanish results:")
+        for result in es_results:
+            print(f"  {result.title}")
+
 
 async def error_handling_example():
     """Example of error handling."""
