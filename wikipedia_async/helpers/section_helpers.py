@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from pydantic import Field
-from wikipedia_async.models.section_models import Section
+from wikipedia_async.models.section_models import Section, SectionJson
 from wikipedia_async.helpers.content_helpers import parse_sections
 from wikipedia_async.helpers.html_helpers import parse_wiki_html
 from typing import List, Optional, Dict, Any, overload
@@ -191,13 +191,28 @@ class SectionHelper(BaseModel):
             "has_nested_structure": max_depth > 0,
         }
 
-    def to_dict(self) -> List[Dict[str, Any]]:
-        """Convert the entire section tree to a list of dictionaries."""
-        return [section.to_dict() for section in self.sections]
 
     def to_string(self) -> str:
         """Convert the entire section tree to a string."""
         return "\n".join(section.to_string() for section in self.sections)
+    
+    def to_json(self, keep_links: bool = True) -> list[SectionJson]:
+        """Convert the entire section tree to a list of dictionaries."""
+        ress = [section.to_json() for section in self.sections]
+        def clean_links(section_json):
+            for pi in range(len(section_json["paragraphs"])):
+                section_json["paragraphs"][pi]["links"] = []
+            if "tables" in section_json:
+                for ti in range(len(section_json["tables"])):
+                    section_json["tables"][ti]["links"] = []
+            if "children" in section_json:
+                for child in section_json["children"]:
+                    clean_links(child)
+
+        if not keep_links:
+            for res in ress:
+                clean_links(res)
+        return ress
 
 
 def get_summary(content: str) -> str:

@@ -3,6 +3,27 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 from pydantic import BaseModel, Field, GetCoreSchemaHandler
 from pydantic_core import CoreSchema, core_schema
+from typing import TypedDict
+
+
+class ParagraphJson(TypedDict):
+    text: str
+    links: list[dict[str, str]]
+
+
+class TableJson(TypedDict):
+    caption: Optional[str]
+    headers: list[str]
+    records: list[dict[str, Any]]
+    links: list[str]
+
+
+class SectionJson(TypedDict):
+    title: str
+    level: int
+    paragraphs: list[ParagraphJson]
+    tables: list[TableJson]
+    children: list["SectionJson"]
 
 
 class Link(str):
@@ -75,6 +96,12 @@ class Link(str):
         title = self.url_title or self.last_path_segment
         return f"[{title}]({self.url}) " if markdown else f"{title} ({self.url}) "
 
+    def to_json(self) -> dict[str, str]:
+        return {
+            "title": self.url_title or self.last_path_segment,
+            "url": self.url,
+        }
+
 
 class Paragraph(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -100,6 +127,12 @@ class Paragraph(BaseModel):
 
         link_text = ", ".join(link_text_items)
         return text + ("\nLinks: " + link_text if link_text else "")
+
+    def to_json(self) -> ParagraphJson:
+        return {
+            "text": self.text,
+            "links": [link.to_json() for link in self.links],
+        }
 
 
 class Table(BaseModel):
@@ -129,9 +162,9 @@ class Table(BaseModel):
         return pd.DataFrame()
 
     @property
-    def records(self):
+    def records(self) -> list[dict[str, Any]]:
         df = self.dataframe
-        return df.to_dict(orient="records")
+        return df.to_dict(orient="records") # type: ignore
 
     @property
     def headers(self):
@@ -143,6 +176,14 @@ class Table(BaseModel):
         if markdown:
             return df.to_markdown(index=False)
         return df.to_string(index=False)
+
+    def to_json(self) -> TableJson:
+        return {
+            "caption": self.caption,
+            "headers": self.headers,
+            "records": self.records,
+            "links": [str(link) for link in self.links],
+        }
 
 
 class Section(BaseModel):
@@ -232,14 +273,13 @@ class Section(BaseModel):
 
         return text
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert the section to a dictionary representation."""
+    def to_json(self) -> SectionJson:
         return {
             "title": self.title,
             "level": self.level,
-            "paragraphs": [p.dict() for p in self.paragraphs],
-            "tables": [t.dict() for t in self.section_tables],
-            "children": [child.to_dict() for child in self.children],
+            "paragraphs": [p.to_json() for p in self.paragraphs],
+            "tables": [t.to_json() for t in self.section_tables],
+            "children": [child.to_json() for child in self.children],
         }
 
     def add_child(self, child: "Section"):
