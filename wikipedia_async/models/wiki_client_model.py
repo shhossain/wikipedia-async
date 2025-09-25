@@ -5,7 +5,6 @@ Pydantic models for Wikipedia API responses and configuration.
 from datetime import datetime
 from decimal import Decimal
 from typing import List, Optional, Dict, Any
-from xxlimited import Str
 from pydantic import BaseModel, Field, validator
 import re
 
