@@ -17,15 +17,26 @@ async def basic_usage_example():
 
     async with WikipediaClient() as client:
         # Simple search
-        results = await client.search("Python programming", limit=5)
-        print(f"Found {len(results)} search results:")
-        for i, result in enumerate(results, 1):
+        res = await client.search("Python programming", limit=5)
+        print(f"Found {len(res.results)} search results:")
+        for i, result in enumerate(res.results, 1):
             print(f"{i}. {result.title}")
 
         # Get a page
         page = await client.get_page("Python (programming language)")
         print(f"\nPage: {page.title}")
-        print(f"Summary: {page.extract[:200]}...")
+        print(f"Summary: {page.summary[:200]}...")
+
+        # Get page sections
+        print("\nSections:")
+        for section in page.sections:
+            print(f"Title: {section.title}: {section.content[:100]}...")
+        print(f"Total sections: {len(page.sections)}")
+
+        # Convert to markdown
+        for section in page.sections:
+            print(f"\nMarkdown for section '{section.title}':")
+            print(section.to_string(markdown=True)[:300] + "...")
 
 
 async def advanced_usage_example():
@@ -94,14 +105,16 @@ async def language_switching_example():
 
     async with WikipediaClient() as client:
         # Search in English
-        en_results = await client.search("Artificial Intelligence", limit=3)
+        res = await client.search("Artificial Intelligence", limit=3)
+        en_results = res.results
         print("English results:")
         for result in en_results:
             print(f"  {result.title}")
 
         # Switch to French
         await client.set_language("fr")
-        fr_results = await client.search("Intelligence artificielle", limit=3)
+        res = await client.search("Intelligence artificielle", limit=3)
+        fr_results = res.results
         print("\nFrench results:")
         for result in fr_results:
             print(f"  {result.title}")

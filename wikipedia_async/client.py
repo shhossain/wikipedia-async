@@ -4,8 +4,7 @@ Main Wikipedia client with async support, rate limiting, caching, and retry logi
 
 import asyncio
 import logging
-from typing import List, Optional, Dict, Any, Union
-import time
+from typing import List, Optional, Dict, Any
 from decimal import Decimal
 
 import aiohttp
@@ -17,9 +16,12 @@ from tenacity import (
     retry_if_exception_type,
     before_sleep_log,
 )
+import traceback
 
-from .config import ClientConfig
-from .models import (
+from wikipedia_async.helpers.section_helpers import SectionHelper
+
+from wikipedia_async.config import ClientConfig
+from wikipedia_async.models.wiki_client_model import (
     SearchResult,
     WikiPage,
     PageSummary,
@@ -28,9 +30,9 @@ from .models import (
     GeoSearchResult,
     BatchResult,
     RandomPageResult,
-    SuggestionResult,
+    SearchResults,
 )
-from .exceptions import (
+from wikipedia_async.exceptions import (
     WikipediaException,
     TimeoutError,
     NetworkError,
@@ -41,10 +43,10 @@ from .exceptions import (
     APIError,
     ValidationError,
 )
-from .cache import AsyncTTLCache, BaseCache, cache_key
-
-logger = logging.getLogger(__name__)
-
+from wikipedia_async.cache import AsyncTTLCache, BaseCache, cache_key
+from urllib.parse import unquote_plus
+from wikipedia_async.helpers.logger_helpers import logger
+import logging
 
 class WikipediaClient:
     """
@@ -73,7 +75,7 @@ class WikipediaClient:
             session: Optional aiohttp session (creates new if None)
         """
         self.config = config or ClientConfig()
-        self._session = session
+        self._session: aiohttp.ClientSession = session  # type: ignore
         self._owned_session = session is None
 
         # Rate limiter
@@ -120,7 +122,7 @@ class WikipediaClient:
         """Close the client and cleanup resources."""
         if self._session and self._owned_session:
             await self._session.close()
-            self._session = None
+            self._session = None  # type: ignore
 
     @retry(
         stop=stop_after_attempt(3),
@@ -205,9 +207,46 @@ class WikipediaClient:
                 except aiohttp.ClientError as e:
                     raise NetworkError(f"Network error: {str(e)}") from e
 
+    def _title_to_url(self, title: str) -> str:
+        """Convert a page title to its full Wikipedia URL."""
+        base_url = f"https://{self.config.language}.wikipedia.org/wiki/"
+        return base_url + title.replace(" ", "_")
+
+    def _normalize_title(self, title: str) -> str:
+        # title can be url
+        res = title.strip().replace("_", " ")
+        if title.startswith("http://") or title.startswith("https://"):
+            parts = title.split("/wiki/")
+            if len(parts) == 2:
+                res = parts[1].replace("_", " ")
+                url = f"{self.config.language}.wikipedia.org"
+                if url not in title:
+                    lang = parts[0].split("//")[1].split(".")[0]
+                    if self.config.auto_detect_language:
+                        logger.once(
+                            logging.WARNING,
+                            f"Auto changing language to {lang}. If not desired, than set `auto_detect_language` to False in config"
+                        )
+                        self.config = self.config.with_language(lang)
+                    else:
+                        raise ValidationError(
+                            "title",
+                            f"URL language '{lang}' does not match client language '{self.config.language}'",
+                        )
+            else:
+                raise ValidationError("title", "Invalid Wikipedia URL")
+
+        if not res:
+            raise ValidationError("title", "Title cannot be empty")
+        return unquote_plus(res)
+
     async def search(
-        self, query: str, limit: int = 10, suggestion: bool = False, namespace: int = 0
-    ) -> Union[List[SearchResult], SuggestionResult]:
+        self,
+        query: str,
+        limit: int = 10,
+        suggestion: bool = False,
+        namespace: int = 0,
+    ) -> SearchResults:
         """
         Search for Wikipedia articles.
 
@@ -253,19 +292,17 @@ class WikipediaClient:
                     word_count=item.get("wordcount"),
                     size=item.get("size"),
                     timestamp=item.get("timestamp"),
+                    url=self._title_to_url(item["title"]),
                 )
                 for item in search_data
             ]
-
+            suggestion_text = None
             if suggestion:
                 suggestion_text = (
                     response["query"].get("searchinfo", {}).get("suggestion")
                 )
-                return SuggestionResult(
-                    query=query, suggestion=suggestion_text, results=results
-                )
 
-            return results
+            return SearchResults(results=results, suggestion=suggestion_text)
 
         except Exception as e:
             logger.error(f"Search failed for query '{query}': {str(e)}")
@@ -281,6 +318,8 @@ class WikipediaClient:
         include_links: bool = False,
         include_categories: bool = False,
         include_coordinates: bool = False,
+        include_tables: bool | str = "auto",
+        include_html: bool = False,
     ) -> WikiPage:
         """
         Get a Wikipedia page with optional content.
@@ -294,6 +333,8 @@ class WikipediaClient:
             include_links: Include internal links
             include_categories: Include page categories
             include_coordinates: Include geographic coordinates
+            include_tables: Include extracted tables (True, False, or 'auto')
+            include_html: Include raw HTML content
 
         Returns:
             WikiPage object with requested data
@@ -333,11 +374,10 @@ class WikipediaClient:
             "prop": "|".join(props),
             "inprop": "url",
             "explaintext": "" if include_content else None,
-            "exintro": "" if include_content else None,
         }
 
         if title:
-            params["titles"] = title
+            params["titles"] = self._normalize_title(title)
         else:
             params["pageids"] = page_id
 
@@ -366,13 +406,56 @@ class WikipediaClient:
                 raise DisambiguationError(page_data["title"], options_response)
 
             # Build WikiPage object
+            helper = SectionHelper.from_content(page_data.get("extract", ""))
             wiki_page = WikiPage(
                 title=page_data["title"],
                 page_id=page_data["pageid"],
                 url=page_data["fullurl"],
                 extract=page_data.get("extract"),
                 namespace=page_data.get("ns", 0),
+                summary=helper.first_content(),
+                sections=helper.sections,
+                content=page_data.get("extract", ""),
+                helper=helper,
+                html_content=None,
+                revision_id=None,
+                coordinates=None,
+                last_modified=None,
+                parent_id=None,
             )
+            html = ""
+            should_fetch_html = False
+            if include_html:
+                should_fetch_html = True
+
+            should_fetch_tables = False
+            if include_tables == "auto":
+                for sec in helper.sections:
+                    name = sec.title.lower()
+                    content = sec.content
+                    if not content.strip():
+                        should_fetch_tables = True
+                        break
+                    if "table of" in name or "list of" in name or "list:" in name:
+                        should_fetch_tables = True
+                        break
+
+            elif include_tables:
+                should_fetch_tables = True
+
+            if should_fetch_tables:
+                should_fetch_html = True
+
+            if should_fetch_html:
+                html = await self.get_page_html(title=title, page_id=page_id)
+                wiki_page.html_content = html
+                if html:
+                    helper = SectionHelper.from_html(html)
+                    wiki_page.sections = helper.sections
+                    wiki_page.tables = [
+                        s for sec in helper.sections for s in sec.tables
+                    ]
+                    wiki_page.helper = helper
 
             # Add optional data
             if include_images and "images" in page_data:
@@ -397,6 +480,9 @@ class WikipediaClient:
                     longitude=Decimal(str(coords["lon"])),
                 )
 
+            # with open(f"debug_{wiki_page.title}.html", "w", encoding="utf-8") as f:
+            #     f.write(wiki_page.html_content)
+
             return wiki_page
 
         except (PageNotFoundError, DisambiguationError, RedirectError):
@@ -406,7 +492,10 @@ class WikipediaClient:
             raise WikipediaException(f"Failed to get page: {str(e)}")
 
     async def get_pages_batch(
-        self, titles: List[str], include_content: bool = True
+        self,
+        titles: List[str],
+        include_content: bool = True,
+        include_tables: bool | str = "auto",
     ) -> BatchResult:
         """
         Get multiple pages in batches for efficiency.
@@ -414,6 +503,7 @@ class WikipediaClient:
         Args:
             titles: List of page titles
             include_content: Include page content
+            include_tables: Include extracted tables (True, False, or 'auto')
 
         Returns:
             BatchResult with successful and failed pages
@@ -426,7 +516,9 @@ class WikipediaClient:
             results = []
             for i in range(0, len(titles), self.config.max_batch_size):
                 chunk = titles[i : i + self.config.max_batch_size]
-                chunk_result = await self._get_pages_chunk(chunk, include_content)
+                chunk_result = await self._get_pages_chunk(
+                    chunk, include_content, include_tables
+                )
                 results.append(chunk_result)
 
             # Combine results
@@ -440,10 +532,14 @@ class WikipediaClient:
                 successful=successful, failed=failed, total_requested=len(titles)
             )
 
-        return await self._get_pages_chunk(titles, include_content)
+        return await self._get_pages_chunk(titles, include_content, include_tables)
 
     async def _get_pages_chunk(
-        self, titles: List[str], include_content: bool
+        self,
+        titles: List[str],
+        include_content: bool,
+        include_tables: bool | str = "auto",
+        include_html: bool = False,
     ) -> BatchResult:
         """Get a chunk of pages (internal method)."""
         props = ["info", "pageprops"]
@@ -452,10 +548,9 @@ class WikipediaClient:
 
         params = {
             "prop": "|".join(props),
-            "titles": "|".join(titles),
+            "titles": "|".join([self._normalize_title(t) for t in titles]),
             "inprop": "url",
             "explaintext": "" if include_content else None,
-            "exintro": "" if include_content else None,
         }
 
         # Remove None values
@@ -465,7 +560,7 @@ class WikipediaClient:
             response = await self._make_request(params)
             pages = response["query"]["pages"]
 
-            successful = []
+            successful: list[WikiPage] = []
             failed = []
 
             for page_data in pages:
@@ -479,18 +574,76 @@ class WikipediaClient:
                         )
                         continue
 
+                    helper = SectionHelper.from_content(page_data.get("extract", ""))
                     wiki_page = WikiPage(
                         title=page_data["title"],
                         page_id=page_data["pageid"],
                         url=page_data["fullurl"],
                         extract=page_data.get("extract"),
                         namespace=page_data.get("ns", 0),
+                        summary=helper.first_content(),
+                        sections=helper.sections,
+                        content=page_data.get("extract", ""),
+                        html_content=None,
+                        revision_id=None,
+                        coordinates=None,
+                        last_modified=None,
+                        parent_id=None,
+                        helper=helper,
                     )
                     successful.append(wiki_page)
+                    if include_html:
+                        htmls = await self.get_page_html_batch(
+                            [wiki_page.title for wiki_page in successful]
+                        )
+                        for wiki_page, html in zip(successful, htmls):
+                            wiki_page.html_content = html
+
+                    should_fetch_tables_titles = []
+                    if include_tables == "auto":
+                        for sec in wiki_page.sections:
+                            name = sec.title.lower()
+                            content = sec.section_content
+                            if not content.strip():
+                                should_fetch_tables_titles.append(wiki_page.title)
+                                break
+                            if (
+                                "Table" == sec.title
+                                or "table of" in name
+                                or "list of" in name
+                                or "list:" in name
+                            ):
+                                should_fetch_tables_titles.append(wiki_page.title)
+                                break
+
+                    elif include_tables:
+                        should_fetch_tables_titles.append(wiki_page.title)
+
+                    if should_fetch_tables_titles:
+                        if not include_html:
+                            htmls = await self.get_page_html_batch(
+                                should_fetch_tables_titles
+                            )
+                            for wiki_page, html in zip(successful, htmls):
+                                wiki_page.html_content = html
+
+                    for wiki_page in successful:
+                        if wiki_page.html_content:
+                            helper = SectionHelper.from_html(wiki_page.html_content)
+                            wiki_page.sections = helper.sections
+                            wiki_page.tables = [
+                                s for sec in helper.sections for s in sec.tables
+                            ]
+                            wiki_page.helper = helper
 
                 except Exception as e:
+                    trace = traceback.format_exc()
                     failed.append(
-                        {"title": page_data.get("title", "unknown"), "error": str(e)}
+                        {
+                            "title": page_data.get("title", "unknown"),
+                            "error": str(e),
+                            "trace": trace,
+                        }
                     )
 
             return BatchResult(
@@ -499,7 +652,15 @@ class WikipediaClient:
 
         except Exception as e:
             # All pages failed
-            failed = [{"title": title, "error": str(e)} for title in titles]
+            trace = traceback.format_exc()
+            failed = [
+                {
+                    "title": title,
+                    "error": str(e),
+                    "trace": trace,
+                }
+                for title in titles
+            ]
             return BatchResult(
                 successful=[], failed=failed, total_requested=len(titles)
             )
@@ -518,9 +679,9 @@ class WikipediaClient:
         Returns:
             PageSummary object
         """
-        params = {
+        params: dict = {
             "prop": "extracts|info",
-            "titles": title,
+            "titles": self._normalize_title(title),
             "inprop": "url",
             "explaintext": "",
             "exintro": "",
@@ -546,8 +707,74 @@ class WikipediaClient:
             url=page_data["fullurl"],
         )
 
+    async def get_summary_batch(
+        self,
+        titles: List[str],
+        sentences: int = 0,
+        characters: int = 0,
+    ) -> List[PageSummary]:
+        """
+        Get summaries for multiple pages in batch.
+
+        Args:
+            titles: List of page titles
+            sentences: Number of sentences (0 = auto)
+            characters: Number of characters (0 = auto)
+
+        Returns:
+            List of PageSummary objects
+        """
+        if not titles:
+            return []
+
+        if len(titles) > self.config.max_batch_size:
+            # Process in chunks
+            results = []
+            for i in range(0, len(titles), self.config.max_batch_size):
+                chunk = titles[i : i + self.config.max_batch_size]
+                chunk_result = await self.get_summary_batch(
+                    chunk, sentences, characters
+                )
+                results.extend(chunk_result)
+            return results
+
+        params: dict = {
+            "prop": "extracts|info",
+            "titles": "|".join([self._normalize_title(t) for t in titles]),
+            "inprop": "url",
+            "explaintext": "",
+            "exintro": "",
+        }
+
+        if sentences > 0:
+            params["exsentences"] = sentences
+        elif characters > 0:
+            params["exchars"] = characters
+
+        response = await self._make_request(params)
+        pages = response["query"]["pages"]
+
+        summaries = []
+        for page_data in pages:
+            if "missing" in page_data:
+                continue
+            summaries.append(
+                PageSummary(
+                    title=page_data["title"],
+                    page_id=page_data["pageid"],
+                    extract=page_data.get("extract", ""),
+                    url=page_data["fullurl"],
+                )
+            )
+
+        return summaries
+
     async def geosearch(
-        self, latitude: float, longitude: float, radius: int = 1000, limit: int = 10
+        self,
+        latitude: float,
+        longitude: float,
+        radius: int = 1000,
+        limit: int = 10,
     ) -> List[GeoSearchResult]:
         """
         Search for pages by geographic coordinates.
@@ -655,7 +882,10 @@ class WikipediaClient:
         response = await self._make_request(params)
         languages = response["query"]["languages"]
 
-        return [Language(code=lang["code"], name=lang["*"]) for lang in languages]
+        return [
+            Language(code=lang["code"], name=lang["*"], english_name=lang.get("en"))
+            for lang in languages
+        ]
 
     async def set_language(self, language: str) -> None:
         """
@@ -702,3 +932,91 @@ class WikipediaClient:
         """Clear the cache."""
         if self._cache:
             await self._cache.clear()
+
+    async def get_page_html_batch(self, titles: List[str]):
+        """
+        Get HTML content for multiple pages in batch.
+
+        Args:
+            titles: List of page titles
+
+        Returns:
+            list of HTML content strings
+        """
+        params = {
+            "prop": "revisions",
+            "rvprop": "content",
+            "rvparse": "",
+            "rvlimit": 1,
+            "titles": "|".join([self._normalize_title(t) for t in titles]),
+        }
+        response = await self._make_request(params)
+        pages = response["query"]["pages"]
+
+        html_contents = []
+        for page_data in pages:
+            data = ""
+            if "revisions" in page_data and page_data["revisions"]:
+                rev = page_data["revisions"][0]
+                if "slots" in rev and "main" in rev["slots"]:
+                    rev = rev["slots"]["main"]
+
+                if "content" in rev:
+                    data = rev["content"]
+                elif "*" in rev:
+                    data = rev["*"]
+            html_contents.append(data)
+
+        return html_contents
+
+    async def get_page_html(
+        self,
+        title: Optional[str] = None,
+        page_id: Optional[int] = None,
+    ) -> str:
+        """
+        Get the HTML content of a Wikipedia page.
+
+        Args:
+            title: Page title (mutually exclusive with page_id)
+            page_id: Page ID (mutually exclusive with title)
+
+        Returns:
+            Full page HTML content
+        """
+        if not title and not page_id:
+            raise ValidationError(
+                "title/page_id", "Either title or page_id must be provided"
+            )
+
+        params = {
+            "prop": "revisions",
+            "rvprop": "content",
+            "rvparse": "",
+            "rvlimit": 1,
+        }
+
+        if title:
+            params["titles"] = self._normalize_title(title)
+        else:
+            params["pageids"] = page_id
+
+        response = await self._make_request(params)
+        pages = response["query"]["pages"]
+
+        if not pages or "missing" in pages[0]:
+            raise PageNotFoundError(title or str(page_id))
+
+        page_data = pages[0]
+        data = ""
+        if "revisions" in page_data and page_data["revisions"]:
+            rev = page_data["revisions"][0]
+            if "slots" in rev and "main" in rev["slots"]:
+                rev = rev["slots"]["main"]
+
+            if "content" in rev:
+                data = rev["content"]
+            elif "*" in rev:
+                data = rev["*"]
+
+        return data

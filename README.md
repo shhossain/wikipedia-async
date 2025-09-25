@@ -31,15 +31,28 @@ async def main():
     client = WikipediaClient()
 
     # Search for articles
-    results = await client.search("Python programming")
+    res = await client.search("Python programming")
+    results = res.results
+    print(f"Found {len(results)} search results:")
 
     # Get page content
-    page = await client.get_page("Python (programming language)")
+    page = await client.get_page("Python (programming language)") # url or title
     print(f"Title: {page.title}")
     print(f"Summary: {page.summary[:200]}...")
 
+    # Sections (table supported)
+    print("Sections:")
+    for section in page.sections:
+        print(section.to_string(markdown=True))
+
+    # if tables don't show set get_page(include_tables=True) to explicitly get tables (which is slower)
+
     # Batch operations
-    pages = await client.get_pages_batch(["Python", "JavaScript", "Rust"])
+    res = await client.get_pages_batch(["Python", "JavaScript", "Rust"]) # list of titles or urls
+    for p in res.successful:
+        print(f"- {p.title} ({p.url})")
+    for err in res.failed:
+        print(err)
 
     await client.close()
 
@@ -67,4 +80,6 @@ client = WikipediaClient(config=config)
 
 See Docs [Here](https://github.com/shhossain/wikipedia-async/blob/main/docs/DOCUMENTATION.md)
 
-See Examples [Here](https://github.com/shhossain/wikipedia-async/blob/main/examples)
+**Note**: The documentation is outdated
+
+See Examples [Here](https://github.com/shhossain/wikipedia-async/blob/main/examples/examples.py)

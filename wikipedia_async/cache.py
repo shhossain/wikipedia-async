@@ -9,7 +9,7 @@ import pickle
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional, TypeVar, Generic, Hashable, overload
+from typing import Any, Dict, Literal, Optional, TypeVar, Generic, Hashable
 from dataclasses import dataclass
 
 
@@ -310,7 +310,7 @@ class FileCache(BaseCache[T]):
                 }
 
                 await self._save_index()
-            except (IOError, pickle.PickleError, json.JSONEncodeError):
+            except (IOError, pickle.PickleError, TypeError):
                 pass  # Ignore write errors
 
     async def delete(self, key: Hashable) -> bool:
@@ -421,29 +421,20 @@ class FileCache(BaseCache[T]):
             }
 
 
-
-@overload
 def AsyncTTLCache(
-    cache_type: Literal["file"],
+    cache_type: Literal["memory", "file"] = "memory",
     cache_dir: str = ".cache",
     max_size: int = 1000,
     default_ttl: float = 300,
     serializer: str = "pickle",
-) -> FileCache[Any]: ...
-
-
-@overload
-def AsyncTTLCache(
-    cache_type: Literal["memory"],
-    max_size: int = 1000,
-    default_ttl: float = 300,
-) -> MemoryCache[Any]: ...
-
-def AsyncTTLCache(
-    cache_type: Literal["memory", "file"] = "memory",
-    **kwargs: Any,
 ) -> BaseCache[Any]:
     """Factory function to create cache instances."""
+    kwargs = {
+        "max_size": max_size,
+        "default_ttl": default_ttl,
+        "serializer": serializer,
+        "cache_dir": cache_dir,
+    }
     if cache_type == "memory":
         return MemoryCache(**kwargs)
     elif cache_type == "file":

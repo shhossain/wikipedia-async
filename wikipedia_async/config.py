@@ -3,7 +3,7 @@ Configuration classes for the Wikipedia client.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, Any
+from typing import Dict, Any, Literal
 
 
 @dataclass
@@ -12,6 +12,7 @@ class ClientConfig:
 
     # Language settings
     language: str = "en"
+    auto_detect_language: bool = True
 
     # Rate limiting
     rate_limit_calls: int = 10  # calls per period
@@ -27,7 +28,7 @@ class ClientConfig:
     enable_cache: bool = True
     cache_ttl: int = 300  # seconds (5 minutes)
     max_cache_size: int = 1000  # number of entries
-    cache_type: str = "memory"  # "memory" or "file"
+    cache_type: Literal["file", "memory"] = "memory"  # "memory" or "file"
     cache_dir: str = "./wiki_cache"  # used if cache_type is "file"
     cache_serializer: str = "pickle"  # "pickle" or "json"
 
@@ -36,9 +37,7 @@ class ClientConfig:
     max_concurrent_requests: int = 10
 
     # User agent
-    user_agent: str = (
-        "modern-wikipedia/1.0.0 (https://github.com/example/modern-wikipedia)"
-    )
+    user_agent: str = "wikipedia/1.0.0 (https://github.com/example/modern-wikipedia)"
 
     # Custom headers
     headers: Dict[str, str] = field(default_factory=dict)
