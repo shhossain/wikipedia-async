@@ -55,11 +55,10 @@ async def main():
     for page in res.successful:
         print("Title:", page.title)
         print("Summary:", page.summary)
-        print(page.helper.tree_view(100))
+        print(page.helper.tree_view())
         print("=" * 80)
         for sec in page.sections:
-            print(sec.title)
-            print(sec.to_string(markdown=True)[:200])
+            print(sec.to_string(markdown=False)[:200])
 
     # print(list(page.tables.items())[3])
 

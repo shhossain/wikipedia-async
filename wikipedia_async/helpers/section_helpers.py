@@ -3,11 +3,13 @@ from pydantic import Field
 from wikipedia_async.models.section_models import Section
 from wikipedia_async.helpers.content_helpers import parse_sections
 from wikipedia_async.helpers.html_helpers import parse_wiki_html
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, overload
 import re
 
 
 class SectionHelper(BaseModel):
+    """Helper class to manage and interact with a list of Section objects."""
+
     sections: list[Section] = Field(
         default_factory=list, description="List of root-level sections"
     )
@@ -41,6 +43,10 @@ class SectionHelper(BaseModel):
 
         return _iter_recursive(self.sections)
 
+    def flattened_sections(self) -> List[Section]:
+        """Get a flat list of all sections (including nested ones)."""
+        return list(self.iter_sections())
+
     def first_content(self) -> str:
         """Get the content of the first section, if available."""
         for section in self.sections:
@@ -48,11 +54,27 @@ class SectionHelper(BaseModel):
                 return section.section_content.strip()
         return ""
 
+    # add slice support
+    @overload
+    def __getitem__(self, i: slice) -> "SectionHelper": ...
+
+    @overload
+    def __getitem__(self, i: int) -> Section: ...
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            return SectionHelper(self.sections[i])
+        elif isinstance(i, int):
+            return self.sections[i]
+        else:
+            raise TypeError("Invalid argument type.")
+
     def get_section_by_title(
         self,
         title: str,
         case_sensitive: bool = False,
         prioritize_top_level: bool = False,
+        regex: bool = False,
     ) -> Section | None:
         """Find a section by its title.
 
@@ -63,9 +85,16 @@ class SectionHelper(BaseModel):
         def normalize(s: str) -> str:
             return s if case_sensitive else s.lower()
 
+        def compare(t1: str, t2: str) -> bool:
+            if regex:
+                flags = 0 if case_sensitive else re.IGNORECASE
+                return re.fullmatch(t1, t2, flags) is not None
+            else:
+                return normalize(t1) == normalize(t2)
+
         def search_recursive(nodes: List[Section]) -> Section | None:
             for node in nodes:
-                if normalize(node.title) == normalize(title):
+                if compare(node.title, title):
                     return node
                 result = search_recursive(node.children)
                 if result:
@@ -86,6 +115,7 @@ class SectionHelper(BaseModel):
         titles: List[str],
         case_sensitive: bool = False,
         prioritize_top_level: bool = False,
+        regex: bool = False,
     ) -> List[Section | None]:
         """Find sections by their titles.
 
@@ -96,9 +126,16 @@ class SectionHelper(BaseModel):
         def normalize(s: str) -> str:
             return s if case_sensitive else s.lower()
 
+        def compare(t1: str, t2: str) -> bool:
+            if regex:
+                flags = 0 if case_sensitive else re.IGNORECASE
+                return re.fullmatch(t1, t2, flags) is not None
+            else:
+                return normalize(t1) == normalize(t2)
+
         def search_recursive(nodes: List[Section], target: str) -> Section | None:
             for node in nodes:
-                if normalize(node.title) == target:
+                if compare(node.title, target):
                     return node
                 found = search_recursive(node.children, target)
                 if found:
@@ -113,7 +150,7 @@ class SectionHelper(BaseModel):
             found: Section | None = None
             if prioritize_top_level:
                 for node in self.sections:
-                    if normalize(node.title) == target:
+                    if compare(node.title, target):
                         found = node
                         break
 
@@ -157,6 +194,10 @@ class SectionHelper(BaseModel):
     def to_dict(self) -> List[Dict[str, Any]]:
         """Convert the entire section tree to a list of dictionaries."""
         return [section.to_dict() for section in self.sections]
+
+    def to_string(self) -> str:
+        """Convert the entire section tree to a string."""
+        return "\n".join(section.to_string() for section in self.sections)
 
 
 def get_summary(content: str) -> str:
