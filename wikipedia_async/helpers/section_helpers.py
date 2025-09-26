@@ -5,13 +5,11 @@ from wikipedia_async.models.section_models import (
     SectionJson,
     SectionTreeJson,
     Table,
-    TableConfig,
 )
 from wikipedia_async.helpers.content_helpers import parse_sections
 from wikipedia_async.helpers.html_helpers import parse_wiki_html
 from typing import Optional, overload
 import re
-from functools import cached_property
 
 
 class SectionHelper(BaseModel):

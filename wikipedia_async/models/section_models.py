@@ -4,7 +4,9 @@ from urllib.parse import parse_qs, urlparse
 from pydantic import BaseModel, Field, GetCoreSchemaHandler
 from pydantic_core import CoreSchema, core_schema
 from typing import TypedDict
-
+from io import StringIO
+import pandas as pd
+import re
 
 class ParagraphJson(TypedDict):
     text: str
@@ -175,6 +177,35 @@ class Paragraph(BaseModel):
         }
 
 
+def ensure_serializable(data: Any) -> Any:
+    """Ensure the data is JSON serializable by converting non-serializable types to strings."""
+    if isinstance(data, dict):
+        return {k: ensure_serializable(v) for k, v in data.items()}
+    elif isinstance(data, (list, set, tuple)):
+        return [ensure_serializable(i) for i in data]
+    elif isinstance(data, (str, int, float, bool)) or data is None:
+        return data
+    elif pd.isna(data):
+        return None
+    elif hasattr(data, "item"):
+        return data.item()
+    elif hasattr(data, "isoformat"):
+        return data.isoformat()
+    else:
+        return str(data)
+    
+def clean_string(s: Any) -> str:
+    if not isinstance(s, str):
+        return s
+    try:
+        # Replace common whitespace-like chars with normal space
+        s = s.replace("\xa0", " ").replace("\u202f", " ").replace("\ufeff", "")
+        # Remove zero-width characters and soft hyphen
+        s = re.sub(r"[\u200b\u00ad]", "", s)
+    except Exception:
+        pass
+    return s
+
 class Table(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     html: str
@@ -187,15 +218,12 @@ class Table(BaseModel):
         if self.mem.get("dataframe") is not None:
             return self.mem["dataframe"]
 
-        from io import StringIO
-
-        import pandas as pd
-
         dfs = pd.read_html(StringIO(self.html))
         if dfs:
             df = dfs[0]
             # Make all nan to empty string
             df = df.fillna("")
+            df = df.applymap(clean_string) # type: ignore
             self.mem["dataframe"] = df
             return df
 
@@ -207,6 +235,7 @@ class Table(BaseModel):
         res: list[dict[str, Any]] = df.to_dict(orient="records")  # type: ignore
         for i, r in enumerate(res):
             r["idx"] = i + 1
+        res = ensure_serializable(res)
         return res
 
     @property
@@ -262,7 +291,7 @@ class Table(BaseModel):
             "caption": self.caption,
             "total_rows": len(self.records),
             "rows_limit": rows_limit,
-            "rows_start_index": rows_start_index,
+            "rows_start_index": start,
             "headers": self.headers,
             "records": records,
             "links": [str(link) for link in self.links] if keep_links else [],
