@@ -247,6 +247,7 @@ class SectionHelper(BaseModel):
     def to_json(
         self,
         table_limit: Optional[int] = None,
+        rows_limit: Optional[int] = None,
         keep_links: bool = True,
         content_limit: Optional[int] = None,
         content_start: int = 0,
@@ -256,6 +257,7 @@ class SectionHelper(BaseModel):
         """Convert the entire section tree to JSON format.
         Args:
             table_limit: Maximum number tables to include per section. If None, include all tables.
+            rows_limit: Maximum number of rows to include per table. If None, include all rows.
             keep_links: Whether to keep hyperlinks in the content.
             content_limit: Maximum number of characters to include from the section content. If None, include all content.
             content_start: Starting character index for the content.
@@ -265,6 +267,7 @@ class SectionHelper(BaseModel):
         ress = [
             section.to_json(
                 table_limit=table_limit,
+                rows_limit=rows_limit,
                 keep_links=keep_links,
                 content_limit=content_limit,
                 content_start_index=content_start,

@@ -366,6 +366,7 @@ class Section(BaseModel):
     def to_json(
         self,
         table_limit: Optional[int] = None,
+        rows_limit: Optional[int] = None,
         keep_links: bool = True,
         content_limit: Optional[int] = None,
         content_start_index: int = 0,
@@ -417,7 +418,7 @@ class Section(BaseModel):
                 else None
             ),
             "tables": [
-                t.to_json(keep_links=keep_links)
+                t.to_json(keep_links=keep_links, rows_limit=rows_limit)
                 for t in (
                     self.section_tables
                     if show_children
