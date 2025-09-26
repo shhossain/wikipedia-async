@@ -29,7 +29,7 @@ def parse_wiki_html(html: str) -> list[Section]:
         return []
 
     sections: list[Section] = [
-        Section(title="Introduction", level=1, paragraphs=[]),
+        Section(title="Introduction", level=1, section_paragraphs=[]),
     ]
     prev_section = sections[0]
     for elem in content_div.children:
@@ -71,7 +71,7 @@ def parse_wiki_html(html: str) -> list[Section]:
             links = extract_links(elem)
 
             paragraph = Paragraph(text=paragraph_text, links=links)
-            prev_section.paragraphs.append(paragraph)
+            prev_section.section_paragraphs.append(paragraph)
 
         elif (name == "div" and elem.find("li")) or name == "ol" or name == "ul":
             lis = elem.find_all("li")
@@ -92,13 +92,13 @@ def parse_wiki_html(html: str) -> list[Section]:
                 links=links,
             )
             # sections[-1].paragraphs.append(paragraph)
-            prev_section.paragraphs.append(paragraph)
+            prev_section.section_paragraphs.append(paragraph)
 
         elif name == "table" and "wikitable" in classes:
             # It's a table
             table_html = str(elem)
             caption_tag = elem.find("caption")
-            caption = caption_tag.get_text(strip=True) if caption_tag else None
+            caption = caption_tag.get_text(strip=True) if caption_tag else prev_section.title
             table = Table(html=table_html, caption=caption)
             prev_section.section_tables.append(table)
 
@@ -122,24 +122,3 @@ def extract_links(elem):
             links.append(Link(full_url, title.strip()))
 
     return links
-
-
-if __name__ == "__main__":
-    with open(
-        "debug_Electoral history of Sheikh Hasina.html", "r", encoding="utf-8"
-    ) as f:
-        html = f.read()
-
-    sections = parse_wiki_html(html)
-    print(f"Parsed {len(sections)} sections")
-    for sec in sections:
-        # print(f"Section: {sec.title} (Level {sec.level})")
-        # print(f"Content: {sec.content[:100]}...")
-        # print(f"Links: {[link.url for link in sec.links][:5]}...")
-        # print(f"Parent: {sec.parent.title if sec.parent else None}")
-        # if sec.tables:
-        #     print(f"Tables: {len(sec.tables)}")
-
-        # print(sec.to_string(markdown=True))
-        print(sec.tree_view())
-        print("=" * 40)

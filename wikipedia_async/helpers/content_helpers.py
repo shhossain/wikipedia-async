@@ -23,7 +23,9 @@ def parse_sections(content: str) -> List[Section]:
         # No sections found, return the entire content as a single section
         return [
             Section(
-                title="Content", level=0, paragraphs=[Paragraph(text=content.strip())]
+                title="Content",
+                level=0,
+                section_paragraphs=[Paragraph(text=content.strip())],
             )
         ]
 
@@ -46,7 +48,7 @@ def parse_sections(content: str) -> List[Section]:
         section = Section(
             title=title,
             level=level,
-            paragraphs=[Paragraph(text=p.strip()) for p in paras if p.strip()],
+            section_paragraphs=[Paragraph(text=p.strip()) for p in paras if p.strip()],
         )
 
         stack.append(section)
@@ -56,7 +58,7 @@ def parse_sections(content: str) -> List[Section]:
         Section(
             title="*",
             level=0,
-            paragraphs=[Paragraph(text=p.strip()) for p in paras if p.strip()],
+            section_paragraphs=[Paragraph(text=p.strip()) for p in paras if p.strip()],
         )
     )
 

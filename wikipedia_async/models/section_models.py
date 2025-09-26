@@ -16,14 +16,54 @@ class TableJson(TypedDict):
     headers: list[str]
     records: list[dict[str, Any]]
     links: list[str]
+    total_rows: int
+    rows_limit: Optional[int]
+    rows_start_index: Optional[int]
+
+
+class SectionContentJson(TypedDict):
+    text: str
+    total_length: int
+    start_index: int
+    content_limit: Optional[int]
+    is_content_ended: bool
 
 
 class SectionJson(TypedDict):
     title: str
     level: int
     paragraphs: list[ParagraphJson]
+    content: Optional[SectionContentJson]
     tables: list[TableJson]
     children: list["SectionJson"]
+
+
+class TablePreviewJson(TypedDict):
+    headers: list[str]
+    caption: Optional[str]
+    total_rows: int
+    first_row: dict[str, Any]
+
+
+class ContentPreviewJson(TypedDict):
+    text: str
+    total_length: int
+
+
+class SectionTreeJson(TypedDict):
+    title: str
+    content_preview: ContentPreviewJson
+    children: list["SectionTreeJson"]
+    tables_preview: list[TablePreviewJson]
+
+
+class TableConfig(TypedDict, total=False):
+    rows_limit: Optional[int]
+    rows_start_index: Optional[int]
+    cols: Optional[list[str]]
+    exclude_cols: Optional[list[str]]
+    exclude_empty: Optional[bool]
+    keep_links: Optional[bool]
 
 
 class Link(str):
@@ -128,17 +168,17 @@ class Paragraph(BaseModel):
         link_text = ", ".join(link_text_items)
         return text + ("\nLinks: " + link_text if link_text else "")
 
-    def to_json(self) -> ParagraphJson:
+    def to_json(self, keep_links: bool = True) -> ParagraphJson:
         return {
             "text": self.text,
-            "links": [link.to_json() for link in self.links],
+            "links": [link.to_json() for link in self.links] if keep_links else [],
         }
 
 
 class Table(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     html: str
-    caption: Optional[str] = None
+    caption: str
     mem: dict = Field(default_factory=dict, repr=False)
     links: list[Link] = Field(default_factory=list)
 
@@ -164,7 +204,10 @@ class Table(BaseModel):
     @property
     def records(self) -> list[dict[str, Any]]:
         df = self.dataframe
-        return df.to_dict(orient="records") # type: ignore
+        res: list[dict[str, Any]] = df.to_dict(orient="records")  # type: ignore
+        for i, r in enumerate(res):
+            r["idx"] = i + 1
+        return res
 
     @property
     def headers(self):
@@ -177,12 +220,52 @@ class Table(BaseModel):
             return df.to_markdown(index=False)
         return df.to_string(index=False)
 
-    def to_json(self) -> TableJson:
+    def to_json(
+        self,
+        rows_limit: Optional[int] = None,
+        rows_start_index: Optional[int] = None,
+        cols: Optional[list[str]] = None,
+        exclude_cols: Optional[list[str]] = None,
+        exclude_empty: bool = False,
+        keep_links: bool = True,
+    ) -> TableJson:
+
+        start = rows_start_index or 0
+        end = start + rows_limit if rows_limit else len(self.records)
+        records = self.records[start:end]
+
+        if cols:
+            records = [{col: rec.get(col, "") for col in cols} for rec in records]
+
+        if exclude_cols:
+            records = [
+                {col: val for col, val in rec.items() if col not in exclude_cols}
+                for rec in records
+            ]
+
+        if exclude_empty:
+            def _empty(v):
+                if v is None:
+                    return True
+                if isinstance(v, str):
+                    return v.strip() == ""
+                if isinstance(v, (list, tuple, set, dict)):
+                    return len(v) == 0
+                return False
+
+            # remove empty fields from each record
+            records = [
+                {k: v for k, v in rec.items() if not _empty(v)} for rec in records
+            ]
+
         return {
             "caption": self.caption,
+            "total_rows": len(self.records),
+            "rows_limit": rows_limit,
+            "rows_start_index": rows_start_index,
             "headers": self.headers,
-            "records": self.records,
-            "links": [str(link) for link in self.links],
+            "records": records,
+            "links": [str(link) for link in self.links] if keep_links else [],
         }
 
 
@@ -190,7 +273,7 @@ class Section(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str
     level: int
-    paragraphs: list[Paragraph] = Field(default_factory=list)
+    section_paragraphs: list[Paragraph] = Field(default_factory=list)
     parent: Optional["Section"] = Field(default=None, repr=False)
     children: list["Section"] = Field(default_factory=list, repr=False)
     section_tables: list[Table] = Field(default_factory=list)
@@ -198,18 +281,18 @@ class Section(BaseModel):
     @property
     def section_content(self) -> str:
         """Return current section content"""
-        return "\n\n".join(p.text for p in self.paragraphs)
+        return "\n\n".join(p.text for p in self.section_paragraphs)
 
     @property
     def section_links(self) -> list[Link]:
         links = []
-        for p in self.paragraphs:
+        for p in self.section_paragraphs:
             links.extend(p.links)
         return links
 
     def section_to_string(self) -> str:
         text = f"# {self.title}"
-        for p in self.paragraphs:
+        for p in self.section_paragraphs:
             text += f"\n\n{p.to_string()}"
 
         for table in self.section_tables:
@@ -238,6 +321,13 @@ class Section(BaseModel):
             tables.extend(child.tables)
         return tables
 
+    @property
+    def paragraphs(self) -> list[Paragraph]:
+        paragraphs = self.section_paragraphs
+        for child in self.children:
+            paragraphs.extend(child.paragraphs)
+        return paragraphs
+
     def to_string(self, markdown: bool = False) -> str:
         # text = f"{self.title}\n\n"
         text = ""
@@ -245,7 +335,7 @@ class Section(BaseModel):
             text += "#" * (self.level) + " "
         text += f"{self.title}\n"
 
-        for p in self.paragraphs:
+        for p in self.section_paragraphs:
             text += f"{p.to_string(markdown=markdown)}\n"
 
         for child in self.children:
@@ -273,13 +363,72 @@ class Section(BaseModel):
 
         return text
 
-    def to_json(self) -> SectionJson:
+    def to_json(
+        self,
+        table_limit: Optional[int] = None,
+        keep_links: bool = True,
+        content_limit: Optional[int] = None,
+        content_start_index: int = 0,
+        as_paragraphs: bool = False,
+        show_children: bool = True,
+    ) -> SectionJson:
+        """Convert the section to JSON format.
+        Args:
+            table_limit: Maximum number tables to include. If None, include all tables.
+            keep_links: Whether to keep hyperlinks in the content.
+            content_limit: Maximum number of characters to include from the section content. If None, include all content.
+            content_start_index: Starting character index for the content.
+            as_paragraphs: Whether to return content as a list of paragraphs instead of a single string.
+            show_children: Whether to show per section like a tree (with children) or a flat list.
+        """
+
+        content = self.content
+        if content_limit and content_limit > 0:
+            content = content[content_start_index : content_start_index + content_limit]
+            as_paragraphs = False
+            show_children = False
+
         return {
             "title": self.title,
             "level": self.level,
-            "paragraphs": [p.to_json() for p in self.paragraphs],
-            "tables": [t.to_json() for t in self.section_tables],
-            "children": [child.to_json() for child in self.children],
+            "paragraphs": (
+                [
+                    p.to_json(keep_links=keep_links)
+                    for p in (
+                        self.section_paragraphs if show_children else self.paragraphs
+                    )
+                ]
+                if as_paragraphs
+                else []
+            ),
+            "content": (
+                {
+                    "text": content,
+                    "total_length": len(self.content),
+                    "start_index": content_start_index,
+                    "content_limit": content_limit,
+                    "is_content_ended": (
+                        True
+                        if content_limit is None
+                        else (content_start_index + content_limit) >= len(self.content)
+                    ),
+                }
+                if not as_paragraphs
+                else None
+            ),
+            "tables": [
+                t.to_json(keep_links=keep_links)
+                for t in (
+                    self.section_tables
+                    if show_children
+                    else self.tables[:table_limit] if table_limit else self.tables
+                )
+            ],
+            "children": (
+                [child.to_json(keep_links=keep_links) for child in self.children]
+                if show_children
+                else []
+            ),
         }
 
     def add_child(self, child: "Section"):
@@ -307,8 +456,37 @@ class Section(BaseModel):
 
         return render_section(self)
 
+    def tree_view_json(self, content_limit: int = 0) -> SectionTreeJson:
+        """Return a tree-like view of the section and its children as JSON."""
+
+        def render_section_json(section: Section) -> SectionTreeJson:
+            content_preview = section.section_content[:content_limit] + (
+                "..."
+                if content_limit and len(section.section_content) > content_limit
+                else ""
+            )
+            return {
+                "title": section.title,
+                "content_preview": {
+                    "text": content_preview,
+                    "total_length": len(section.section_content),
+                },
+                "children": [render_section_json(child) for child in section.children],
+                "tables_preview": [
+                    {
+                        "headers": table.headers,
+                        "caption": table.caption,
+                        "total_rows": len(table.records),
+                        "first_row": table.records[0] if table.records else {},
+                    }
+                    for table in section.section_tables
+                ],
+            }
+
+        return render_section_json(self)
+
     def __repr__(self):
-        return f"Section(title='{self.title}', level={self.level}, children={len(self.children)}, paragraphs={len(self.paragraphs)}, tables={len(self.section_tables)})"
+        return f"Section(title='{self.title}', level={self.level}, children={len(self.children)}, paragraphs={len(self.section_paragraphs)}, tables={len(self.section_tables)})"
 
     def __str__(self):
         return self.to_string(markdown=False)

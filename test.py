@@ -1,4 +1,5 @@
-from wikipedia_async import WikipediaClient, ClientConfig, SectionHelper
+from pprint import pprint
+from wikipedia_async import WikipediaClient, ClientConfig
 import asyncio
 import time
 
@@ -38,27 +39,27 @@ async def main():
     #     print("=" * 80)
     # print("Time taken:", time.time() - s)
 
-    s = time.time()
-    res = await client.get_pages_batch(titles, lang="en")
-    print("Time taken:", time.time() - s)
-    for page in res.successful:
-        print("Title:", page.title)
-        print("Summary:", page.summary)
-        print(page.helper.tree_view(100))
-        print("=" * 80)
-    print("Successful:", len(res.successful))
-    print("Failed:", len(res.failed))
+    # s = time.time()
+    # res = await client.get_pages_batch(titles, lang="en")
+    # print("Time taken:", time.time() - s)
+    # for page in res.successful:
+    #     print("Title:", page.title)
+    #     print("Summary:", page.summary)
+    #     print(page.helper.tree_view(100))
+    #     print("=" * 80)
+    # print("Successful:", len(res.successful))
+    # print("Failed:", len(res.failed))
 
-    for fail in res.failed:
-        print(f"Failed to get {fail['title']}: {fail['error']}")
+    # for fail in res.failed:
+    #     print(f"Failed to get {fail['title']}: {fail['error']}")
 
-    for page in res.successful:
-        print("Title:", page.title)
-        print("Summary:", page.summary)
-        print(page.helper.tree_view())
-        print("=" * 80)
-        for sec in page.sections:
-            print(sec.to_string(markdown=False)[:200])
+    # for page in res.successful:
+    #     print("Title:", page.title)
+    #     print("Summary:", page.summary)
+    #     print(page.helper.tree_view())
+    #     print("=" * 80)
+    #     for sec in page.sections:
+    #         print(sec.to_string(markdown=False)[:200])
 
     # print(list(page.tables.items())[3])
 
@@ -67,6 +68,31 @@ async def main():
     #     print(f"Title: {title}")
     #     print(summ)
     #     print("=" * 80)
+
+    s = time.time()
+    page = await client.get_page(titles[0], lang="en")
+    print("Time taken:", time.time() - s)
+
+    # pprint(page.helper.tree_view_json(50))
+
+    # pprint(
+    #     page.helper.to_json(
+    #         keep_links=False,
+    #         table_limit=1,
+    #         content_limit=500,
+    #         show_children=False,
+    #     )
+    # )
+
+    pprint(
+        page.sections[0].to_json(
+            keep_links=False,
+            content_start_index=100,
+            content_limit=400,
+        )
+    )
+    print("=" * 20)
+    pprint(page.sections[0].tree_view_json())
 
     await client.close()
 

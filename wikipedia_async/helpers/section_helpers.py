@@ -1,10 +1,17 @@
 from pydantic import BaseModel
 from pydantic import Field
-from wikipedia_async.models.section_models import Section, SectionJson
+from wikipedia_async.models.section_models import (
+    Section,
+    SectionJson,
+    SectionTreeJson,
+    Table,
+    TableConfig,
+)
 from wikipedia_async.helpers.content_helpers import parse_sections
 from wikipedia_async.helpers.html_helpers import parse_wiki_html
-from typing import List, Optional, Dict, Any, overload
+from typing import Optional, overload
 import re
+from functools import cached_property
 
 
 class SectionHelper(BaseModel):
@@ -26,7 +33,7 @@ class SectionHelper(BaseModel):
         sections = parse_wiki_html(html)
         return cls(sections)
 
-    def __init__(self, sections: Optional[List[Section]] = None):
+    def __init__(self, sections: Optional[list[Section]] = None):
         # Use BaseModel.__init__ to ensure pydantic internals are initialized
         # Delegate initialization to BaseModel to avoid missing __pydantic_fields_set__
         super().__init__(sections=sections or [])
@@ -43,7 +50,7 @@ class SectionHelper(BaseModel):
 
         return _iter_recursive(self.sections)
 
-    def flattened_sections(self) -> List[Section]:
+    def flattened_sections(self) -> list[Section]:
         """Get a flat list of all sections (including nested ones)."""
         return list(self.iter_sections())
 
@@ -92,7 +99,7 @@ class SectionHelper(BaseModel):
             else:
                 return normalize(t1) == normalize(t2)
 
-        def search_recursive(nodes: List[Section]) -> Section | None:
+        def search_recursive(nodes: list[Section]) -> Section | None:
             for node in nodes:
                 if compare(node.title, title):
                     return node
@@ -110,13 +117,51 @@ class SectionHelper(BaseModel):
         # Otherwise search the whole tree
         return search_recursive(self.sections)
 
+    def get_table_by_caption(
+        self,
+        caption: str,
+        case_sensitive: bool = False,
+        regex: bool = False,
+        section: Optional[Section | str] = None,
+    ) -> Optional[Table]:
+        """Find a table by its caption."""
+
+        def normalize(s: str) -> str:
+            return s if case_sensitive else s.lower()
+
+        def compare(t1: str, t2: str) -> bool:
+            if regex:
+                flags = 0 if case_sensitive else re.IGNORECASE
+                return re.fullmatch(t1, t2, flags) is not None
+            else:
+                return normalize(t1) == normalize(t2)
+
+        secs = []
+        if section:
+            title: str = section.title if isinstance(section, Section) else section
+            target_section = self.get_section_by_title(title)
+            if not target_section:
+                return None
+            secs = [target_section]
+        else:
+            secs = self.sections
+
+        for sec in secs:
+            for table in sec.tables:
+                if not table.caption:
+                    continue
+                if compare(table.caption, caption):
+                    return table
+
+        return None
+
     def get_sections_by_titles(
         self,
-        titles: List[str],
+        titles: list[str],
         case_sensitive: bool = False,
         prioritize_top_level: bool = False,
         regex: bool = False,
-    ) -> List[Section | None]:
+    ) -> list[Section | None]:
         """Find sections by their titles.
 
         If prioritize_top_level is True, prefer matches among root-level sections
@@ -133,7 +178,7 @@ class SectionHelper(BaseModel):
             else:
                 return normalize(t1) == normalize(t2)
 
-        def search_recursive(nodes: List[Section], target: str) -> Section | None:
+        def search_recursive(nodes: list[Section], target: str) -> Section | None:
             for node in nodes:
                 if compare(node.title, target):
                     return node
@@ -142,7 +187,7 @@ class SectionHelper(BaseModel):
                     return found
             return None
 
-        results: List[Section | None] = []
+        results: list[Section | None] = []
         for title in titles:
             target = normalize(title)
 
@@ -169,6 +214,10 @@ class SectionHelper(BaseModel):
             text += section.tree_view(content_limit)
         return text.strip()
 
+    def tree_view_json(self, content_limit: int = 0) -> list[SectionTreeJson]:
+        """Return a tree-like view of all sections in JSON format."""
+        return [section.tree_view_json(content_limit) for section in self.sections]
+
     def summary(self) -> dict:
         """Get a summary of the section structure."""
 
@@ -191,27 +240,40 @@ class SectionHelper(BaseModel):
             "has_nested_structure": max_depth > 0,
         }
 
-
     def to_string(self) -> str:
         """Convert the entire section tree to a string."""
         return "\n".join(section.to_string() for section in self.sections)
-    
-    def to_json(self, keep_links: bool = True) -> list[SectionJson]:
-        """Convert the entire section tree to a list of dictionaries."""
-        ress = [section.to_json() for section in self.sections]
-        def clean_links(section_json):
-            for pi in range(len(section_json["paragraphs"])):
-                section_json["paragraphs"][pi]["links"] = []
-            if "tables" in section_json:
-                for ti in range(len(section_json["tables"])):
-                    section_json["tables"][ti]["links"] = []
-            if "children" in section_json:
-                for child in section_json["children"]:
-                    clean_links(child)
 
-        if not keep_links:
-            for res in ress:
-                clean_links(res)
+    def to_json(
+        self,
+        table_limit: Optional[int] = None,
+        keep_links: bool = True,
+        content_limit: Optional[int] = None,
+        content_start: int = 0,
+        as_paragraphs: bool = False,
+        show_children: bool = True,
+    ) -> list[SectionJson]:
+        """Convert the entire section tree to JSON format.
+        Args:
+            table_limit: Maximum number tables to include per section. If None, include all tables.
+            keep_links: Whether to keep hyperlinks in the content.
+            content_limit: Maximum number of characters to include from the section content. If None, include all content.
+            content_start: Starting character index for the content.
+            as_paragraphs: Whether to return content as a list of paragraphs instead of a single string.
+            show_children: Whether to show per section like a tree (with children) or a flat list.
+        """
+        ress = [
+            section.to_json(
+                table_limit=table_limit,
+                keep_links=keep_links,
+                content_limit=content_limit,
+                content_start_index=content_start,
+                as_paragraphs=as_paragraphs,
+                show_children=show_children,
+            )
+            for section in self.sections
+        ]
+
         return ress
 
 
