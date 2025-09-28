@@ -2,6 +2,7 @@ from email.policy import default
 from pydantic import BaseModel
 from pydantic import Field
 from wikipedia_async.models.section_models import (
+    Link,
     Paragraph,
     Section,
     SectionJson,
@@ -81,7 +82,6 @@ class SectionHelper(BaseModel):
     @overload
     def __getitem__(self, i: str, _default: Section) -> Section: ...
 
-    @lru_cache(maxsize=2)
     def __getitem__(self, i, _default: Optional[Section] = None):
         if isinstance(i, slice):
             return SectionHelper(self.sections[i])
@@ -349,9 +349,15 @@ class SectionHelper(BaseModel):
     def paragraphs(self) -> list[Paragraph]:
         """Get a flat list of all paragraphs in all sections."""
         return [p for section in self.sections for p in section.paragraphs]
+    
+    @cached_property
+    def links(self) -> list[Link]:
+        """Get a flat list of all links in all sections."""
+        return [link for section in self.sections for link in section.links]
 
     def summary(self) -> dict:
         """Get a summary of the section structure."""
+
         def count_sections(sections):
             total = len(sections)
             max_depth = 0
@@ -385,7 +391,7 @@ class SectionHelper(BaseModel):
         self,
         table_limit: Optional[int] = None,
         rows_limit: Optional[int] = None,
-        keep_links: bool = True,
+        keep_links: bool = False,
         content_limit: Optional[int] = None,
         content_start: int = 0,
         as_paragraphs: bool = False,

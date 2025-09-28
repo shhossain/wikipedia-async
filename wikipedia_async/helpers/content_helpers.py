@@ -56,7 +56,7 @@ def parse_sections(content: str) -> List[Section]:
     paras = content[: matches[0].start()].strip().split("\n\n")
     sections.append(
         Section(
-            title="*",
+            title="Introduction",
             level=0,
             section_paragraphs=[Paragraph(text=p.strip()) for p in paras if p.strip()],
         )

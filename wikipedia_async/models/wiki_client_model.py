@@ -138,9 +138,10 @@ class WikiPage(BaseModel):
         default_factory=list,
         description="Extracted tables from the page",
     )
+    """A list of tables extracted from the page."""
 
     helper: SectionHelper = Field(..., description="Helper for section operations")
-
+    """Helper instance for section operations."""
 
 class GeoSearchResult(BaseModel):
     """Geographic search result."""

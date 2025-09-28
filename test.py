@@ -4,10 +4,11 @@ import asyncio
 import time
 
 section = None
+page = None
 
 
 async def main():
-    global section
+    global section, page
     # Initialize client with optimal defaults
     client = WikipediaClient(
         ClientConfig(
@@ -20,7 +21,7 @@ async def main():
     # s = time.time()
     # await client.set_language("bn")
     titles = [
-        "List of constituencies of the Jatiya Sangsad",
+        "Python (programming language)",
         "Java (programming language)",
         "C (programming language)",
     ]
@@ -29,12 +30,19 @@ async def main():
     title = titles[0]
     page = await client.get_page(title, lang="en")
     print("Time taken:", time.time() - s)
-    for sec in page.sections:
-        for table in sec.tables:
-            print(table.caption)
-            print(table.dataframe)
-            print()
-    
+    # for sec in page.sections:
+    #     for table in sec.tables:
+    #         print(table.caption)
+    #         print(table.dataframe)
+    #         print()
+
+    # result = page.helper.find_sections_containing("Python")
+    # result2 = page.helper.find_tables_containing("Python", by="cell_content")
+    # pprint(result)
+    # pprint(result2)
+
+    # print(page.helper.content)
+
     await client.close()
 
     # pprint(page.helper.tree_view_json(50))
@@ -47,8 +55,6 @@ async def main():
     #         show_children=False,
     #     )
     # )
-
-    
 
 
 # if __name__ == "__main__":

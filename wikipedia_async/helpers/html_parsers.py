@@ -98,14 +98,12 @@ def parse_wiki_html(html: str) -> list[Section]:
             # It's a table
             table_html = str(elem)
             caption_tag = elem.find("caption")
-            caption = (
-                caption_tag.get_text(strip=True) if caption_tag else prev_section.title
-            )
-            table = Table(html=table_html, caption=caption)
-            prev_section.section_tables.append(table)
+            caption = caption_tag.get_text(strip=True) if caption_tag else None
+            if not caption:
+                caption = prev_section.title
 
-            # Extract links from the table
-            table.links = extract_links(elem)
+            table = Table(html=table_html, caption=caption, links=extract_links(elem))
+            prev_section.section_tables.append(table)
 
     return sections
 
@@ -124,6 +122,3 @@ def extract_links(elem):
             links.append(Link(full_url, title.strip()))
 
     return links
-
-
-

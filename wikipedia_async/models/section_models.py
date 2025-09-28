@@ -1,5 +1,5 @@
 import uuid
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, overload
 from urllib.parse import parse_qs, urlparse
 from pydantic import BaseModel, Field, GetCoreSchemaHandler
 from pydantic_core import CoreSchema, core_schema
@@ -11,6 +11,8 @@ import re
 from wikipedia_async.helpers.html_helpers import clean_html_table
 from wikipedia_async.helpers.logger_helpers import logger
 from functools import cached_property
+import random
+
 
 class ParagraphJson(TypedDict):
     text: str
@@ -77,6 +79,7 @@ class SectionSnippet(BaseModel):
     end_index: int
     snippet: str
     found_in: Literal["title", "content"]
+
 
 class SectionSearchResult(BaseModel):
     section: "Section"
@@ -165,6 +168,9 @@ class Link(str):
             "url": self.url,
         }
 
+    def __repr__(self):
+        return f"Link(title='{self.url_title}', url='{self.url}')"
+
 
 class Paragraph(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -191,11 +197,17 @@ class Paragraph(BaseModel):
         link_text = ", ".join(link_text_items)
         return text + ("\nLinks: " + link_text if link_text else "")
 
-    def to_json(self, keep_links: bool = True) -> ParagraphJson:
+    def to_json(self, keep_links: bool = False) -> ParagraphJson:
         return {
             "text": self.text,
             "links": [link.to_json() for link in self.links] if keep_links else [],
         }
+
+    def __repr__(self):
+        return f"Paragraph(text='{self.text[:30]}...', links={len(self.links)}, list_items={len(self.list_items)})"
+
+    def __str__(self):
+        return self.to_string(markdown=False)
 
 
 def ensure_serializable(data: Any) -> Any:
@@ -233,7 +245,6 @@ class Table(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     html: str
     caption: str
-    mem: dict = Field(default_factory=dict, repr=False)
     links: list[Link] = Field(default_factory=list)
 
     class Config:
@@ -244,16 +255,17 @@ class Table(BaseModel):
         cls,
         records: list[dict[str, Any]],
         caption: str = "",
+        links: Optional[list[Link]] = None,
     ) -> "Table":
         if not records:
-            return cls(html="", caption=caption)
+            return cls(html="", caption=caption, links=links or [])
 
         df = pd.DataFrame(records)
         # Make all nan to empty string
         df = df.fillna("")
-        df = df.applymap(clean_string)  # type: ignore
-        html = df.to_html(index=False)
-        return cls(html=html, caption=caption)
+        df = df.apply(lambda x: clean_string(x))
+        html = df.to_html(index=False)  # type: ignore
+        return cls(html=html, caption=caption, links=links or [])
 
     @cached_property
     def dataframe(self) -> pd.DataFrame:
@@ -280,10 +292,18 @@ class Table(BaseModel):
         res = ensure_serializable(res)
         return res
 
+    @property
+    def rows(self):
+        return self.records
+
     @cached_property
     def headers(self):
         df = self.dataframe
         return df.columns.tolist()
+    
+    @property
+    def columns(self):
+        return self.headers
 
     def to_string(self, markdown: bool = False) -> str:
         df = self.dataframe
@@ -298,7 +318,7 @@ class Table(BaseModel):
         cols: Optional[list[str]] = None,
         exclude_cols: Optional[list[str]] = None,
         exclude_empty: bool = False,
-        keep_links: bool = True,
+        keep_links: bool = False,
     ) -> TableJson:
 
         start = rows_start_index or 0
@@ -338,6 +358,101 @@ class Table(BaseModel):
             "records": records,
             "links": [str(link) for link in self.links] if keep_links else [],
         }
+
+    def __repr__(self):
+        return f"Table(caption='{self.caption}', rows={len(self.records)}, headers={self.headers}, links={len(self.links)})"
+    
+    def __str__(self):
+        return self.to_string(markdown=False)
+
+    def __len__(self):
+        return len(self.records)
+
+    @overload
+    def __getitem__(self, i: int) -> dict[str, Any]: ...
+
+    @overload
+    def __getitem__(self, i: slice) -> "Table": ...
+
+    @overload
+    def __getitem__(self, i: str) -> list[Any]: ...
+
+    def __getitem__(self, i: int | slice | str):
+        if isinstance(i, slice):
+            return Table.from_records(
+                self.records[i], caption=self.caption, links=self.links
+            )
+        elif isinstance(i, int):
+            return self.records[i]
+        elif isinstance(i, str):
+            if i in self.headers:
+                return [rec.get(i, None) for rec in self.records]
+            else:
+                raise KeyError(f"Column '{i}' not found in table headers.")
+        else:
+            raise TypeError("Invalid argument type.")
+
+    def __iter__(self):
+        for record in self.records:
+            yield record
+
+    def __contains__(self, item):
+        for record in self.records:
+            if item in record.values():
+                return True
+        return False
+
+    def index_of(self, item):
+        for idx, record in enumerate(self.records):
+            if item in record.values():
+                return idx
+        return -1
+
+    def count(self, item):
+        count = 0
+        for record in self.records:
+            if item in record.values():
+                count += 1
+        return count
+
+    def filter_rows(self, column: str, value: Any) -> "Table":
+        filtered_records = [rec for rec in self.records if rec.get(column) == value]
+        return Table.from_records(
+            filtered_records, caption=self.caption, links=self.links
+        )
+
+    def get_column(self, column: str) -> list[Any]:
+        if column not in self.headers:
+            raise KeyError(f"Column '{column}' not found in table headers.")
+        return [rec.get(column, None) for rec in self.records]
+
+    def unique_values(self, column: str) -> set[Any]:
+        if column not in self.headers:
+            raise KeyError(f"Column '{column}' not found in table headers.")
+        return set(rec.get(column, None) for rec in self.records if column in rec)
+
+    def sort_by(self, column: str, reverse: bool = False) -> "Table":
+        if column not in self.headers:
+            raise KeyError(f"Column '{column}' not found in table headers.")
+
+        def _sort_key(rec: dict[str, Any]):
+            val = rec.get(column)
+            return (val is None, val if val is not None else "")
+
+        sorted_records = sorted(self.records, key=_sort_key, reverse=reverse)
+        return Table.from_records(
+            sorted_records, caption=self.caption, links=self.links
+        )
+
+    def sample(self, n: int = 5) -> "Table":
+        sampled_records = random.sample(self.records, min(n, len(self.records)))
+        return Table.from_records(
+            sampled_records, caption=self.caption, links=self.links
+        )
+    
+    def __bool__(self):
+        return len(self.records) > 0
+    
 
 
 class Section(BaseModel):
@@ -441,7 +556,7 @@ class Section(BaseModel):
         self,
         table_limit: Optional[int] = None,
         rows_limit: Optional[int] = None,
-        keep_links: bool = True,
+        keep_links: bool = False,
         content_limit: Optional[int] = None,
         content_start_index: int = 0,
         as_paragraphs: bool = False,
