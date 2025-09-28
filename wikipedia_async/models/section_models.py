@@ -90,6 +90,7 @@ class TableSearchResult(BaseModel):
     table: "Table"
     rows: list[dict[str, Any]]
     found_in: Literal["caption", "column_name", "cell_value"]
+    total_rows: int
 
 
 class Link(str):

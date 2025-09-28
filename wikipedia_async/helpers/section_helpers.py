@@ -1,4 +1,3 @@
-from email.policy import default
 from pydantic import BaseModel
 from pydantic import Field
 from wikipedia_async.models.section_models import (
@@ -15,7 +14,7 @@ from wikipedia_async.models.section_models import (
 from wikipedia_async.helpers.content_helpers import parse_sections
 from wikipedia_async.helpers.html_parsers import parse_wiki_html
 from typing import Any, Literal, Optional, overload
-from functools import cached_property, lru_cache
+from functools import cached_property
 import re
 
 
@@ -185,7 +184,7 @@ class SectionHelper(BaseModel):
         text: str,
         section: Optional[Section | str] = None,
         case_sensitive: bool = False,
-        by: Optional[Literal["title", "content", "both"]] = "title",
+        by: Optional[Literal["title", "content", "all"]] = "title",
         surrounding_text_length: int = 30,
     ) -> list[SectionSearchResult]:
         """Find a section containing the given text.
@@ -193,7 +192,7 @@ class SectionHelper(BaseModel):
             text: Text to search for.
             section: If provided, limit search to this section (by title or Section object).
             case_sensitive: Whether the search is case-sensitive.
-            by: Where to search for the text: "title", "content", or "both".
+            by: Where to search for the text: "title", "content", or "all".
             surrounding_text_length: Number of characters to include before and after the match in the snippet.
         Returns:
             List of SectionSearchResult objects that contain the sections with matching text and snippets.
@@ -216,10 +215,10 @@ class SectionHelper(BaseModel):
                 haystack = ""
                 title_start_index = 0
                 title_end_index = 0
-                if by in ("title", "both"):
+                if by in ("title", "all"):
                     haystack += s.title + "\n"
                     title_end_index = len(s.title)
-                if by in ("content", "both"):
+                if by in ("content", "all"):
                     haystack += s.section_content + "\n"
 
                 needle = text
@@ -260,7 +259,15 @@ class SectionHelper(BaseModel):
         table: Optional[Table | str] = None,
         case_sensitive: bool = False,
         column_name: Optional[str] = None,
-        by: Literal["caption", "column_name", "cell_content"] = "caption",
+        by: Literal[
+            "caption",
+            "column_name",
+            "cell_content",
+            "caption+column_name",
+            "caption+cell_content",
+            "column_name+cell_content",
+            "all",
+        ] = "caption",
     ) -> list[TableSearchResult]:
         """Find tables containing the given text.
         Args:
@@ -293,11 +300,11 @@ class SectionHelper(BaseModel):
                 tables = [table]
         else:
             tables = sec.tables if sec else self.tables
-            
+
         res = []
         for table in tables:
             r = None
-            if by == "caption":
+            if "caption" in by or by == "all":
                 caption = table.caption or ""
                 flags = 0 if case_sensitive else re.IGNORECASE
                 if re.search(text, caption, flags):
@@ -305,8 +312,10 @@ class SectionHelper(BaseModel):
                         table=table,
                         found_in="caption",
                         rows=[],
+                        total_rows=len(table),
                     )
-            elif by == "column_name" and column_name:
+
+            if not r and ("column_name" in by or by == "all"):
                 for col in table.headers:
                     flags = 0 if case_sensitive else re.IGNORECASE
                     if re.search(text, str(col), flags):
@@ -314,13 +323,16 @@ class SectionHelper(BaseModel):
                             table=table,
                             found_in="column_name",
                             rows=[],
+                            total_rows=len(table),
                         )
                         break
 
-            elif by == "cell_content":
+            elif not r and ("cell_content" in by or by == "all"):
                 rows = []
                 for row in table.records:
-                    for cell in row.values():
+                    for col, cell in row.items():
+                        if column_name and col != column_name:
+                            continue
                         flags = 0 if case_sensitive else re.IGNORECASE
                         if isinstance(cell, str) and re.search(text, cell, flags):
                             rows.append(row)
@@ -330,6 +342,7 @@ class SectionHelper(BaseModel):
                         table=table,
                         found_in="cell_value",
                         rows=rows,
+                        total_rows=len(table),
                     )
             if r:
                 res.append(r)
@@ -364,7 +377,7 @@ class SectionHelper(BaseModel):
     def paragraphs(self) -> list[Paragraph]:
         """Get a flat list of all paragraphs in all sections."""
         return [p for section in self.sections for p in section.paragraphs]
-    
+
     @cached_property
     def links(self) -> list[Link]:
         """Get a flat list of all links in all sections."""
