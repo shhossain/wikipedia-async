@@ -257,6 +257,7 @@ class SectionHelper(BaseModel):
         self,
         text: str,
         section: Optional[Section | str] = None,
+        table: Optional[Table | str] = None,
         case_sensitive: bool = False,
         column_name: Optional[str] = None,
         by: Literal["caption", "column_name", "cell_content"] = "caption",
@@ -265,6 +266,7 @@ class SectionHelper(BaseModel):
         Args:
             text: Text to search for.
             section: If provided, limit search to this section (by title or Section object).
+            table: If provided, limit search to this table (by caption or Table object).
             case_sensitive: Whether the search is case-sensitive.
             column_name: If searching by column name, the specific column name to look for.
             by: Where to search for the text: "caption", "column_name", or "cell_content".
@@ -278,7 +280,20 @@ class SectionHelper(BaseModel):
             else:
                 sec = section
 
-        tables = sec.tables if sec else self.tables
+        # tables = sec.tables if sec else self.tables
+        tables = []
+        if table:
+            if isinstance(table, str):
+                tbl = self.get_table_by_caption(
+                    table, case_sensitive=case_sensitive, section=sec
+                )
+                if tbl:
+                    tables = [tbl]
+            else:
+                tables = [table]
+        else:
+            tables = sec.tables if sec else self.tables
+            
         res = []
         for table in tables:
             r = None
