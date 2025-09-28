@@ -461,7 +461,7 @@ class WikipediaClient:
                 should_fetch_html = True
 
             if should_fetch_html:
-                html = await self.get_page_html(title=title, page_id=page_id)
+                html = await self.get_page_html(title=title, page_id=page_id, lang=lang)
                 wiki_page.html_content = html
                 if html:
                     helper = SectionHelper.from_html(html)

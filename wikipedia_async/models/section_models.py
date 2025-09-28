@@ -1,5 +1,5 @@
 import uuid
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import parse_qs, urlparse
 from pydantic import BaseModel, Field, GetCoreSchemaHandler
 from pydantic_core import CoreSchema, core_schema
@@ -7,6 +7,10 @@ from typing import TypedDict
 from io import StringIO
 import pandas as pd
 import re
+
+from wikipedia_async.helpers.html_helpers import clean_html_table
+from wikipedia_async.helpers.logger_helpers import logger
+from functools import cached_property
 
 class ParagraphJson(TypedDict):
     text: str
@@ -66,6 +70,23 @@ class TableConfig(TypedDict, total=False):
     exclude_cols: Optional[list[str]]
     exclude_empty: Optional[bool]
     keep_links: Optional[bool]
+
+
+class SectionSnippet(BaseModel):
+    start_index: int
+    end_index: int
+    snippet: str
+    found_in: Literal["title", "content"]
+
+class SectionSearchResult(BaseModel):
+    section: "Section"
+    snippets: list[SectionSnippet]
+
+
+class TableSearchResult(BaseModel):
+    table: "Table"
+    rows: list[dict[str, Any]]
+    found_in: Literal["caption", "column_name", "cell_value"]
 
 
 class Link(str):
@@ -180,7 +201,7 @@ class Paragraph(BaseModel):
 def ensure_serializable(data: Any) -> Any:
     """Ensure the data is JSON serializable by converting non-serializable types to strings."""
     if isinstance(data, dict):
-        return {k: ensure_serializable(v) for k, v in data.items()}
+        return {str(k): ensure_serializable(v) for k, v in data.items()}
     elif isinstance(data, (list, set, tuple)):
         return [ensure_serializable(i) for i in data]
     elif isinstance(data, (str, int, float, bool)) or data is None:
@@ -193,7 +214,8 @@ def ensure_serializable(data: Any) -> Any:
         return data.isoformat()
     else:
         return str(data)
-    
+
+
 def clean_string(s: Any) -> str:
     if not isinstance(s, str):
         return s
@@ -206,6 +228,7 @@ def clean_string(s: Any) -> str:
         pass
     return s
 
+
 class Table(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     html: str
@@ -213,23 +236,42 @@ class Table(BaseModel):
     mem: dict = Field(default_factory=dict, repr=False)
     links: list[Link] = Field(default_factory=list)
 
-    @property
-    def dataframe(self):
-        if self.mem.get("dataframe") is not None:
-            return self.mem["dataframe"]
+    class Config:
+        frozen = True
 
-        dfs = pd.read_html(StringIO(self.html))
-        if dfs:
-            df = dfs[0]
-            # Make all nan to empty string
-            df = df.fillna("")
-            df = df.applymap(clean_string) # type: ignore
-            self.mem["dataframe"] = df
-            return df
+    @classmethod
+    def from_records(
+        cls,
+        records: list[dict[str, Any]],
+        caption: str = "",
+    ) -> "Table":
+        if not records:
+            return cls(html="", caption=caption)
+
+        df = pd.DataFrame(records)
+        # Make all nan to empty string
+        df = df.fillna("")
+        df = df.applymap(clean_string)  # type: ignore
+        html = df.to_html(index=False)
+        return cls(html=html, caption=caption)
+
+    @cached_property
+    def dataframe(self) -> pd.DataFrame:
+        try:
+            dfs = pd.read_html(StringIO(clean_html_table(self.html)))
+            if dfs:
+                df = dfs[0]
+                # Make all nan to empty string
+                df = df.fillna("")
+                df = df.apply(lambda x: clean_string(x))
+                return df  # type: ignore
+        except Exception as e:
+            logger.error(f"Error occurred while parsing HTML table: {e}", exc_info=True)
+            pass
 
         return pd.DataFrame()
 
-    @property
+    @cached_property
     def records(self) -> list[dict[str, Any]]:
         df = self.dataframe
         res: list[dict[str, Any]] = df.to_dict(orient="records")  # type: ignore
@@ -238,7 +280,7 @@ class Table(BaseModel):
         res = ensure_serializable(res)
         return res
 
-    @property
+    @cached_property
     def headers(self):
         df = self.dataframe
         return df.columns.tolist()
@@ -307,12 +349,15 @@ class Section(BaseModel):
     children: list["Section"] = Field(default_factory=list, repr=False)
     section_tables: list[Table] = Field(default_factory=list)
 
-    @property
+    class Config:
+        frozen = True
+
+    @cached_property
     def section_content(self) -> str:
         """Return current section content"""
         return "\n\n".join(p.text for p in self.section_paragraphs)
 
-    @property
+    @cached_property
     def section_links(self) -> list[Link]:
         links = []
         for p in self.section_paragraphs:
@@ -328,7 +373,7 @@ class Section(BaseModel):
             text += f"\n\nTable: {table.caption if table.caption else self.title}\n{table.to_string()}"
         return text
 
-    @property
+    @cached_property
     def content(self) -> str:
         return (
             self.section_content
@@ -336,21 +381,21 @@ class Section(BaseModel):
             + "\n\n".join(child.content for child in self.children)
         ).strip()
 
-    @property
+    @cached_property
     def links(self) -> list[Link]:
         links = self.section_links
         for child in self.children:
             links.extend(child.links)
         return links
 
-    @property
+    @cached_property
     def tables(self) -> list[Table]:
         tables = self.section_tables
         for child in self.children:
             tables.extend(child.tables)
         return tables
 
-    @property
+    @cached_property
     def paragraphs(self) -> list[Paragraph]:
         paragraphs = self.section_paragraphs
         for child in self.children:

@@ -14,10 +14,14 @@ class CustomLogger(logging.Logger):
         self._logged_messages.add(key)
         self.log(level, msg, *args, **kwargs)
 
+def get_logger() -> CustomLogger:
+    logger = CustomLogger("wikipedia_async")
+    logger.setLevel(logging.DEBUG)
 
-logger = CustomLogger("wikipedia_async")
-logger.setLevel(logging.DEBUG)
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    logger.addHandler(handler)
+    logger.propagate = False
+    return logger
 
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
-logger.addHandler(handler)
+logger = get_logger()

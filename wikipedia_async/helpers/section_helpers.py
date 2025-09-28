@@ -1,14 +1,20 @@
+from email.policy import default
 from pydantic import BaseModel
 from pydantic import Field
 from wikipedia_async.models.section_models import (
+    Paragraph,
     Section,
     SectionJson,
+    SectionSearchResult,
+    SectionSnippet,
     SectionTreeJson,
     Table,
+    TableSearchResult,
 )
 from wikipedia_async.helpers.content_helpers import parse_sections
-from wikipedia_async.helpers.html_helpers import parse_wiki_html
-from typing import Optional, overload
+from wikipedia_async.helpers.html_parsers import parse_wiki_html
+from typing import Any, Literal, Optional, overload
+from functools import cached_property, lru_cache
 import re
 
 
@@ -18,6 +24,9 @@ class SectionHelper(BaseModel):
     sections: list[Section] = Field(
         default_factory=list, description="List of root-level sections"
     )
+
+    class Config:
+        frozen = True
 
     @classmethod
     def from_content(cls, content: str) -> "SectionHelper":
@@ -66,39 +75,53 @@ class SectionHelper(BaseModel):
     @overload
     def __getitem__(self, i: int) -> Section: ...
 
-    def __getitem__(self, i):
+    @overload
+    def __getitem__(self, i: str, _default: Optional[Any]) -> Section | None: ...
+
+    @overload
+    def __getitem__(self, i: str, _default: Section) -> Section: ...
+
+    @lru_cache(maxsize=2)
+    def __getitem__(self, i, _default: Optional[Section] = None):
         if isinstance(i, slice):
             return SectionHelper(self.sections[i])
         elif isinstance(i, int):
             return self.sections[i]
+        elif isinstance(i, str):
+            section = self.get_section_by_title(i, prioritize_top_level=True)
+            if section is None and _default is not None:
+                return _default
+            return section
         else:
             raise TypeError("Invalid argument type.")
 
     def get_section_by_title(
         self,
         title: str,
+        parent_title: Optional[str] = None,
         case_sensitive: bool = False,
         prioritize_top_level: bool = False,
-        regex: bool = False,
     ) -> Section | None:
         """Find a section by its title.
-
-        If prioritize_top_level is True, prefer matches among root-level sections
-        (self.sections) before searching the whole tree.
+        Args:
+            title: Title of the section to find. Supports regex.
+            parent_title: If provided, only consider sections whose parent has this title.
+            case_sensitive: Whether the search is case-sensitive.
+            prioritize_top_level: If True, prefer matches among root-level sections
+                (self.sections) before searching the whole tree.
+        Returns:
+            The matching Section object, or None if not found.
         """
 
-        def normalize(s: str) -> str:
-            return s if case_sensitive else s.lower()
-
         def compare(t1: str, t2: str) -> bool:
-            if regex:
-                flags = 0 if case_sensitive else re.IGNORECASE
-                return re.fullmatch(t1, t2, flags) is not None
-            else:
-                return normalize(t1) == normalize(t2)
+            flags = 0 if case_sensitive else re.IGNORECASE
+            return re.search(t1, t2, flags) is not None
 
         def search_recursive(nodes: list[Section]) -> Section | None:
             for node in nodes:
+                if parent_title:
+                    if not node.parent or not compare(node.parent.title, parent_title):
+                        continue
                 if compare(node.title, title):
                     return node
                 result = search_recursive(node.children)
@@ -109,8 +132,12 @@ class SectionHelper(BaseModel):
         # Try root-level match first if requested
         if prioritize_top_level:
             for node in self.sections:
-                if normalize(node.title) == normalize(title):
-                    return node
+                if compare(node.title, title):
+                    if parent_title:
+                        if node.parent and compare(node.parent.title, parent_title):
+                            return node
+                    else:
+                        return node
 
         # Otherwise search the whole tree
         return search_recursive(self.sections)
@@ -119,20 +146,20 @@ class SectionHelper(BaseModel):
         self,
         caption: str,
         case_sensitive: bool = False,
-        regex: bool = False,
         section: Optional[Section | str] = None,
     ) -> Optional[Table]:
-        """Find a table by its caption."""
-
-        def normalize(s: str) -> str:
-            return s if case_sensitive else s.lower()
+        """Find a table by its caption.
+        Args:
+            caption: Caption of the table to find. Supports regex.
+            case_sensitive: Whether the search is case-sensitive.
+            section: If provided, limit search to this section (by title or Section object).
+        Returns:
+            The matching Table object, or None if not found.
+        """
 
         def compare(t1: str, t2: str) -> bool:
-            if regex:
-                flags = 0 if case_sensitive else re.IGNORECASE
-                return re.fullmatch(t1, t2, flags) is not None
-            else:
-                return normalize(t1) == normalize(t2)
+            flags = 0 if case_sensitive else re.IGNORECASE
+            return re.search(t1, t2, flags) is not None
 
         secs = []
         if section:
@@ -153,57 +180,146 @@ class SectionHelper(BaseModel):
 
         return None
 
-    def get_sections_by_titles(
+    def find_sections_containing(
         self,
-        titles: list[str],
+        text: str,
+        section: Optional[Section | str] = None,
         case_sensitive: bool = False,
-        prioritize_top_level: bool = False,
-        regex: bool = False,
-    ) -> list[Section | None]:
-        """Find sections by their titles.
-
-        If prioritize_top_level is True, prefer matches among root-level sections
-        (self.sections) before searching the whole tree.
+        by: Optional[Literal["title", "content", "both"]] = "title",
+        surrounding_text_length: int = 30,
+    ) -> list[SectionSearchResult]:
+        """Find a section containing the given text.
+        Args:
+            text: Text to search for.
+            section: If provided, limit search to this section (by title or Section object).
+            case_sensitive: Whether the search is case-sensitive.
+            by: Where to search for the text: "title", "content", or "both".
+            surrounding_text_length: Number of characters to include before and after the match in the snippet.
+        Returns:
+            List of SectionSearchResult objects that contain the sections with matching text and snippets.
         """
+        secs = []
+        if section:
+            title: str = section.title if isinstance(section, Section) else section
+            target_section = self.get_section_by_title(title)
+            if not target_section:
+                return []
+            secs = [target_section]
+        else:
+            secs = self.sections
 
-        def normalize(s: str) -> str:
-            return s if case_sensitive else s.lower()
+        res = []
+        for sec in secs:
+            snippets = []
+            srange = []
+            for s in [sec] + sec.children:
+                haystack = ""
+                title_start_index = 0
+                title_end_index = 0
+                if by in ("title", "both"):
+                    haystack += s.title + "\n"
+                    title_end_index = len(s.title)
+                if by in ("content", "both"):
+                    haystack += s.section_content + "\n"
 
-        def compare(t1: str, t2: str) -> bool:
-            if regex:
+                needle = text
                 flags = 0 if case_sensitive else re.IGNORECASE
-                return re.fullmatch(t1, t2, flags) is not None
+                matches = list(re.finditer(needle, haystack, flags))
+                for match in matches:
+                    start, end = match.span()
+                    for surrounding in srange:
+                        if start >= surrounding[0] and end <= surrounding[1]:
+                            break
+                    else:
+                        found_in = "content"
+                        if start >= title_start_index and end <= title_end_index:
+                            found_in = "title"
+
+                        snippet_start = max(0, start - surrounding_text_length)
+                        snippet_end = min(len(haystack), end + surrounding_text_length)
+                        snippet = haystack[snippet_start:snippet_end]
+                        snippets.append(
+                            SectionSnippet(
+                                start_index=start,
+                                end_index=end,
+                                snippet=snippet,
+                                found_in=found_in,
+                            )
+                        )
+                        srange.append((start, end))
+
+            if snippets:
+                res.append(SectionSearchResult(section=s, snippets=snippets))
+
+        return res
+
+    def find_tables_containing(
+        self,
+        text: str,
+        section: Optional[Section | str] = None,
+        case_sensitive: bool = False,
+        column_name: Optional[str] = None,
+        by: Literal["caption", "column_name", "cell_content"] = "caption",
+    ) -> list[TableSearchResult]:
+        """Find tables containing the given text.
+        Args:
+            text: Text to search for.
+            section: If provided, limit search to this section (by title or Section object).
+            case_sensitive: Whether the search is case-sensitive.
+            column_name: If searching by column name, the specific column name to look for.
+            by: Where to search for the text: "caption", "column_name", or "cell_content".
+        Returns:
+            List of TableSearchResult objects that contain the tables with matching text and relevant rows.
+        """
+        sec = None
+        if section:
+            if isinstance(section, str):
+                sec = self.get_section_by_title(section)
             else:
-                return normalize(t1) == normalize(t2)
+                sec = section
 
-        def search_recursive(nodes: list[Section], target: str) -> Section | None:
-            for node in nodes:
-                if compare(node.title, target):
-                    return node
-                found = search_recursive(node.children, target)
-                if found:
-                    return found
-            return None
-
-        results: list[Section | None] = []
-        for title in titles:
-            target = normalize(title)
-
-            # Try root-level match first if requested
-            found: Section | None = None
-            if prioritize_top_level:
-                for node in self.sections:
-                    if compare(node.title, target):
-                        found = node
+        tables = sec.tables if sec else self.tables
+        res = []
+        for table in tables:
+            r = None
+            if by == "caption":
+                caption = table.caption or ""
+                flags = 0 if case_sensitive else re.IGNORECASE
+                if re.search(text, caption, flags):
+                    r = TableSearchResult(
+                        table=table,
+                        found_in="caption",
+                        rows=[],
+                    )
+            elif by == "column_name" and column_name:
+                for col in table.headers:
+                    flags = 0 if case_sensitive else re.IGNORECASE
+                    if re.search(text, str(col), flags):
+                        r = TableSearchResult(
+                            table=table,
+                            found_in="column_name",
+                            rows=[],
+                        )
                         break
 
-            # If not found (or not prioritizing), search the whole tree
-            if not found:
-                found = search_recursive(self.sections, target)
+            elif by == "cell_content":
+                rows = []
+                for row in table.records:
+                    for cell in row.values():
+                        flags = 0 if case_sensitive else re.IGNORECASE
+                        if isinstance(cell, str) and re.search(text, cell, flags):
+                            rows.append(row)
+                            break
+                if rows:
+                    r = TableSearchResult(
+                        table=table,
+                        found_in="cell_value",
+                        rows=rows,
+                    )
+            if r:
+                res.append(r)
 
-            results.append(found)
-
-        return results
+        return res
 
     def tree_view(self, content_limit: int = 0) -> str:
         """Return a tree-like view of all sections."""
@@ -216,9 +332,26 @@ class SectionHelper(BaseModel):
         """Return a tree-like view of all sections in JSON format."""
         return [section.tree_view_json(content_limit) for section in self.sections]
 
+    @cached_property
+    def tables(self) -> list[Table]:
+        """Get a flat list of all tables in all sections."""
+        tables = []
+        for section in self.iter_sections():
+            tables.extend(section.tables)
+        return tables
+
+    @cached_property
+    def content(self) -> str:
+        """Get the combined content of all sections."""
+        return "\n".join(section.content for section in self.sections)
+
+    @cached_property
+    def paragraphs(self) -> list[Paragraph]:
+        """Get a flat list of all paragraphs in all sections."""
+        return [p for section in self.sections for p in section.paragraphs]
+
     def summary(self) -> dict:
         """Get a summary of the section structure."""
-
         def count_sections(sections):
             total = len(sections)
             max_depth = 0
@@ -238,9 +371,15 @@ class SectionHelper(BaseModel):
             "has_nested_structure": max_depth > 0,
         }
 
-    def to_string(self) -> str:
+    def to_string(self, markdown: bool = False) -> str:
         """Convert the entire section tree to a string."""
-        return "\n".join(section.to_string() for section in self.sections)
+        return (
+            "---\n"
+            if markdown
+            else "\n\n".join(
+                section.to_string(markdown=markdown) for section in self.sections
+            )
+        )
 
     def to_json(
         self,
@@ -276,13 +415,3 @@ class SectionHelper(BaseModel):
         ]
 
         return ress
-
-
-def get_summary(content: str) -> str:
-    # before headings
-    pat = re.compile(r"^(={2,})\s*(.*?)\s*\1$", re.MULTILINE)
-    match = pat.search(content)
-    if match:
-        return content[: match.start()].strip()
-
-    return content.strip()[:500] + ("..." if len(content) > 500 else "")
