@@ -23,6 +23,7 @@ class ParagraphJson(TypedDict):
 
 
 class TableJson(TypedDict):
+    table_id: str
     caption: Optional[str]
     headers: list[str]
     records: list[dict[str, Any]]
@@ -41,6 +42,7 @@ class SectionContentJson(TypedDict):
 
 
 class SectionJson(TypedDict):
+    section_id: str
     title: str
     level: int
     paragraphs: list[ParagraphJson]
@@ -50,6 +52,7 @@ class SectionJson(TypedDict):
 
 
 class TablePreviewJson(TypedDict):
+    table_id: str
     headers: list[str]
     caption: Optional[str]
     total_rows: int
@@ -62,6 +65,7 @@ class ContentPreviewJson(TypedDict):
 
 
 class SectionTreeJson(TypedDict):
+    section_id: str
     title: str
     content_preview: ContentPreviewJson
     children: list["SectionTreeJson"]
@@ -409,6 +413,7 @@ class Table(BaseModel):
             ]
 
         return {
+            "table_id": self.id,
             "caption": self.caption,
             "total_rows": len(self.records),
             "rows_limit": rows_limit,
@@ -653,6 +658,7 @@ class Section(BaseModel):
             show_children = False
 
         return {
+            "section_id": self.id,
             "title": self.title,
             "level": self.level,
             "paragraphs": (
@@ -730,6 +736,7 @@ class Section(BaseModel):
                 else ""
             )
             return {
+                "section_id": section.id,
                 "title": section.title,
                 "content_preview": {
                     "text": content_preview,
@@ -738,6 +745,7 @@ class Section(BaseModel):
                 "children": [render_section_json(child) for child in section.children],
                 "tables_preview": [
                     {
+                        "table_id": table.id,
                         "headers": table.headers,
                         "caption": table.caption,
                         "total_rows": len(table.records),

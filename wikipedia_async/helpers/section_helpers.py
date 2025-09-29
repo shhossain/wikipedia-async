@@ -139,6 +139,30 @@ class SectionHelper(BaseModel):
         # Otherwise search the whole tree
         return search_recursive(self.sections)
 
+    def get_section_by_id(self, id: str) -> Optional[Section]:
+        """Find a section by its unique ID.
+        Args:
+            id: ID of the section to find.
+        Returns:
+            The matching Section object, or None if not found.
+        """
+        for section in self.iter_sections():
+            if section.id == id:
+                return section
+        return None
+
+    def get_table_by_id(self, id: str) -> Optional[Table]:
+        """Find a table by its unique ID.
+        Args:
+            id: ID of the table to find.
+        Returns:
+            The matching Table object, or None if not found.
+        """
+        for table in self.tables:
+            if table.id == id:
+                return table
+        return None
+
     def get_table_by_caption(
         self,
         caption: str,
