@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from pydantic import Field
 from wikipedia_async.models.section_models import (
     Link,
@@ -14,7 +14,6 @@ from wikipedia_async.models.section_models import (
 from wikipedia_async.helpers.content_helpers import parse_sections
 from wikipedia_async.helpers.html_parsers import parse_wiki_html
 from typing import Any, Literal, Optional, overload
-from functools import cached_property
 import re
 
 
@@ -25,8 +24,7 @@ class SectionHelper(BaseModel):
         default_factory=list, description="List of root-level sections"
     )
 
-    class Config:
-        frozen = True
+    model_config = ConfigDict(frozen=True)
 
     @classmethod
     def from_content(cls, content: str) -> "SectionHelper":
@@ -35,9 +33,9 @@ class SectionHelper(BaseModel):
         return cls(sections)
 
     @classmethod
-    def from_html(cls, html: str) -> "SectionHelper":
+    def from_html(cls, html: str, url: str) -> "SectionHelper":
         """Create a SectionHelper from raw Wikipedia HTML."""
-        sections = parse_wiki_html(html)
+        sections = parse_wiki_html(html, url)
         return cls(sections)
 
     def __init__(self, sections: Optional[list[Section]] = None):
@@ -360,25 +358,22 @@ class SectionHelper(BaseModel):
         """Return a tree-like view of all sections in JSON format."""
         return [section.tree_view_json(content_limit) for section in self.sections]
 
-    @cached_property
+    @property
     def tables(self) -> list[Table]:
         """Get a flat list of all tables in all sections."""
-        tables = []
-        for section in self.iter_sections():
-            tables.extend(section.tables)
-        return tables
+        return [table for section in self.sections for table in section.tables]
 
-    @cached_property
+    @property
     def content(self) -> str:
         """Get the combined content of all sections."""
         return "\n".join(section.content for section in self.sections)
 
-    @cached_property
+    @property
     def paragraphs(self) -> list[Paragraph]:
         """Get a flat list of all paragraphs in all sections."""
         return [p for section in self.sections for p in section.paragraphs]
 
-    @cached_property
+    @property
     def links(self) -> list[Link]:
         """Get a flat list of all links in all sections."""
         return [link for section in self.sections for link in section.links]
@@ -405,14 +400,14 @@ class SectionHelper(BaseModel):
             "has_nested_structure": max_depth > 0,
         }
 
-    def to_string(self, markdown: bool = False) -> str:
+    def to_string(self, markdown: bool = False, keep_links: bool = False) -> str:
         """Convert the entire section tree to a string."""
-        return (
-            "---\n"
-            if markdown
-            else "\n\n".join(
-                section.to_string(markdown=markdown) for section in self.sections
+        return ("\n---\n" if markdown else "\n\n").join(
+            section.to_string(
+                markdown=markdown,
+                keep_links=keep_links,
             )
+            for section in self.sections
         )
 
     def to_json(

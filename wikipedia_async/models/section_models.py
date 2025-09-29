@@ -1,17 +1,20 @@
-import uuid
 from typing import Any, Literal, Optional, overload
 from urllib.parse import parse_qs, urlparse
-from pydantic import BaseModel, Field, GetCoreSchemaHandler
+from pydantic import BaseModel, ConfigDict, Field, GetCoreSchemaHandler, field_validator
 from pydantic_core import CoreSchema, core_schema
 from typing import TypedDict
 from io import StringIO
 import pandas as pd
-import re
-
+from wikipedia_async.helpers.common_helpers import (
+    clean_string,
+    ensure_serializable,
+    normalize_url,
+)
 from wikipedia_async.helpers.html_helpers import clean_html_table
 from wikipedia_async.helpers.logger_helpers import logger
 from functools import cached_property
 import random
+import hashlib
 
 
 class ParagraphJson(TypedDict):
@@ -95,14 +98,35 @@ class TableSearchResult(BaseModel):
 
 class Link(str):
     url_title: str
+    url_text: str
     parsed_url: Any
+    is_reference: bool
 
-    def __new__(cls, url: str, title: str = ""):
+    def __new__(
+        cls, url: str, title: str = "", text: str = "", is_reference: bool = False
+    ):
         obj = str.__new__(cls, url)
         # store the title on the instance; str subclasses can have attributes
         obj.url_title = title
+        obj.url_text = text
         obj.parsed_url = urlparse(url)
+        obj.is_reference = is_reference
         return obj
+
+    @cached_property
+    def id(self) -> str:
+        """Return a unique ID for the link based on its URL."""
+        return hashlib.md5(normalize_url(self).encode()).hexdigest()
+
+    @property
+    def normalized_url(self) -> str:
+        """Return the normalized URL."""
+        return normalize_url(self)
+
+    @property
+    def title(self) -> str:
+        """Return the title of the link."""
+        return self.url_text or self.url_title or self.last_path_segment
 
     @classmethod
     def __get_pydantic_core_schema__(
@@ -160,8 +184,11 @@ class Link(str):
         return str(self)
 
     def to_string(self, markdown: bool = False) -> str:
-        title = self.url_title or self.last_path_segment
-        return f"[{title}]({self.url}) " if markdown else f"{title} ({self.url}) "
+        return (
+            f"[{self.title}]({self.url}) "
+            if markdown
+            else f"{self.title} ({self.url}) "
+        )
 
     def to_json(self) -> dict[str, str]:
         return {
@@ -174,82 +201,112 @@ class Link(str):
 
 
 class Paragraph(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    text: str
+    paragraph_text: str
     links: list[Link] = Field(default_factory=list)
     list_items: list[str] = Field(default_factory=list)
 
-    def to_string(self, markdown: bool = False) -> str:
-        text = self.text
-        # Build link text using a list to avoid repeated string allocation
-        link_text_items = []
-        for link in self.links:
-            if markdown and link.url_title in text:
-                text = text.replace(
-                    link.url_title, link.to_string(markdown=markdown), 1
-                )
-            elif markdown and link.last_path_segment in text:
-                text = text.replace(
-                    link.last_path_segment, link.to_string(markdown=markdown), 1
-                )
-            else:
-                link_text_items.append(link.to_string(markdown=markdown))
+    model_config = ConfigDict(frozen=True)
 
-        link_text = ", ".join(link_text_items)
-        return text + ("\nLinks: " + link_text if link_text else "")
+    @property
+    def text(self) -> str:
+        return self.paragraph_text or "\n".join(self.list_items)
+
+    @field_validator("paragraph_text", mode="before")
+    def clean_para(cls, v: str) -> str:
+        return clean_string(v)
+
+    @field_validator("list_items", mode="before")
+    def clean_list_items(cls, v: list[str]) -> list[str]:
+        return [clean_string(item) for item in v]
+
+    def clean_text(self, keep_links: bool = False) -> str:
+        text = self.paragraph_text
+        if not keep_links and self.links:
+            for link in self.links:
+                if link.url_text in text:
+                    text = text.replace(
+                        link.url_text, "" if link.is_reference else link.url_title, 1
+                    )
+        return text
+
+    @cached_property
+    def id(self) -> str:
+        """Return a unique ID for the paragraph based on its text."""
+        return hashlib.md5(self.paragraph_text.encode()).hexdigest()
+
+    def to_string(self, markdown: bool = False, keep_links: bool = False) -> str:
+        # text = self.text
+        # # Build link text using a list to avoid repeated string allocation
+        # link_text_items = []
+        # for link in self.links:
+        #     if markdown and link.url_text in text:
+        #         text = text.replace(
+        #             link.url_text,
+        #             "" if not keep_links else link.title,
+        #             1,
+        #         )
+        #     elif keep_links:
+        #         link_text_items.append(link.to_string(markdown=markdown))
+
+        # return text + (
+        #     "\nLinks: " + ", ".join(link_text_items) if link_text_items else ""
+        # )
+
+        text = ""
+        if self.list_items:
+            for link in self.links:
+                if link.url_text in self.list_items[0]:
+                    self.list_items[0] = self.list_items[0].replace(
+                        link.to_string(markdown=markdown),
+                        "" if not keep_links else link.url_title,
+                        1,
+                    )
+            if markdown:
+                text += "\n".join(f"- {item}" for item in self.list_items)
+            else:
+                text += "\n".join(self.list_items)
+        else:
+            text = self.paragraph_text
+            for link in self.links:
+                if markdown and link.url_text in text:
+                    text = text.replace(
+                        link.to_string(markdown=markdown),
+                        "" if not keep_links else link.url_title,
+                        1,
+                    )
+                elif keep_links:
+                    text += (
+                        "\nLinks: " + link.to_string(markdown=markdown)
+                        if text and not text.endswith("\n")
+                        else link.to_string(markdown=markdown)
+                    )
+        return text
 
     def to_json(self, keep_links: bool = False) -> ParagraphJson:
         return {
-            "text": self.text,
+            "text": self.clean_text(keep_links=keep_links),
             "links": [link.to_json() for link in self.links] if keep_links else [],
         }
 
     def __repr__(self):
-        return f"Paragraph(text='{self.text[:30]}...', links={len(self.links)}, list_items={len(self.list_items)})"
+        return f"Paragraph(text='{self.paragraph_text[:30]}...', links={len(self.links)}, list_items={len(self.list_items)})"
 
     def __str__(self):
         return self.to_string(markdown=False)
 
 
-def ensure_serializable(data: Any) -> Any:
-    """Ensure the data is JSON serializable by converting non-serializable types to strings."""
-    if isinstance(data, dict):
-        return {str(k): ensure_serializable(v) for k, v in data.items()}
-    elif isinstance(data, (list, set, tuple)):
-        return [ensure_serializable(i) for i in data]
-    elif isinstance(data, (str, int, float, bool)) or data is None:
-        return data
-    elif pd.isna(data):
-        return None
-    elif hasattr(data, "item"):
-        return data.item()
-    elif hasattr(data, "isoformat"):
-        return data.isoformat()
-    else:
-        return str(data)
-
-
-def clean_string(s: Any) -> str:
-    if not isinstance(s, str):
-        return s
-    try:
-        # Replace common whitespace-like chars with normal space
-        s = s.replace("\xa0", " ").replace("\u202f", " ").replace("\ufeff", "")
-        # Remove zero-width characters and soft hyphen
-        s = re.sub(r"[\u200b\u00ad]", "", s)
-    except Exception:
-        pass
-    return s
-
-
 class Table(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    # id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     html: str
     caption: str
     links: list[Link] = Field(default_factory=list)
 
-    class Config:
-        frozen = True
+    model_config = ConfigDict(frozen=True)
+
+    @cached_property
+    def id(self) -> str:
+        """Return a unique ID for the table based on its HTML content."""
+        return hashlib.md5(clean_html_table(self.html).encode()).hexdigest()
 
     @classmethod
     def from_records(
@@ -301,7 +358,7 @@ class Table(BaseModel):
     def headers(self):
         df = self.dataframe
         return df.columns.tolist()
-    
+
     @property
     def columns(self):
         return self.headers
@@ -336,6 +393,7 @@ class Table(BaseModel):
             ]
 
         if exclude_empty:
+
             def _empty(v):
                 if v is None:
                     return True
@@ -362,7 +420,7 @@ class Table(BaseModel):
 
     def __repr__(self):
         return f"Table(caption='{self.caption}', rows={len(self.records)}, headers={self.headers}, links={len(self.links)})"
-    
+
     def __str__(self):
         return self.to_string(markdown=False)
 
@@ -450,14 +508,21 @@ class Table(BaseModel):
         return Table.from_records(
             sampled_records, caption=self.caption, links=self.links
         )
-    
+
     def __bool__(self):
         return len(self.records) > 0
-    
+
+    # compare
+    def __eq__(self, other):
+        if not isinstance(other, Table):
+            return False
+        return self.id == other.id
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
 
 
 class Section(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str
     level: int
     section_paragraphs: list[Paragraph] = Field(default_factory=list)
@@ -465,13 +530,24 @@ class Section(BaseModel):
     children: list["Section"] = Field(default_factory=list, repr=False)
     section_tables: list[Table] = Field(default_factory=list)
 
-    class Config:
-        frozen = True
+    @cached_property
+    def section_id(self) -> str:
+        """Return a unique ID for the section based on its title and level."""
+        return hashlib.md5(f"{self.title}-{self.level}".encode()).hexdigest()
+
+    @cached_property
+    def id(self) -> str:
+        """Return a unique ID for the section based on its title and level."""
+        return hashlib.md5(
+            (
+                self.section_id + "".join(child.section_id for child in self.children)
+            ).encode()
+        ).hexdigest()
 
     @cached_property
     def section_content(self) -> str:
         """Return current section content"""
-        return "\n\n".join(p.text for p in self.section_paragraphs)
+        return "\n\n".join(p.paragraph_text for p in self.section_paragraphs)
 
     @cached_property
     def section_links(self) -> list[Link]:
@@ -518,32 +594,29 @@ class Section(BaseModel):
             paragraphs.extend(child.paragraphs)
         return paragraphs
 
-    def to_string(self, markdown: bool = False) -> str:
+    def to_string(self, markdown: bool = False, keep_links: bool = False) -> str:
         # text = f"{self.title}\n\n"
         text = ""
         if markdown:
             text += "#" * (self.level) + " "
-        text += f"{self.title}\n"
+        text += f"{self.title}\n\n"
 
         for p in self.section_paragraphs:
-            text += f"{p.to_string(markdown=markdown)}\n"
+            text += f"{p.to_string(markdown=markdown, keep_links=keep_links)}\n\n"
 
         for child in self.children:
-            text += f"{child.to_string(markdown=markdown)}\n"
+            text += f"{child.to_string(markdown=markdown, keep_links=keep_links)}\n\n"
 
         for table in self.section_tables:
             caption = table.caption or self.title
             ll = []
             for link in table.links:
-                if markdown and link.url_title in caption:
+                if markdown and link.url_text in caption:
                     caption = caption.replace(
-                        link.url_title, link.to_string(markdown=markdown), 1
+                        link.url_text,
+                        "" if not keep_links else link.title,
                     )
-                elif markdown and link.last_path_segment in caption:
-                    caption = caption.replace(
-                        link.last_path_segment, link.to_string(markdown=markdown), 1
-                    )
-                else:
+                elif keep_links:
                     ll.append(link.to_string(markdown=markdown))
 
             text += f"\n\nTable: {caption}\n{table.to_string(markdown=markdown)}"

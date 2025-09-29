@@ -2,6 +2,7 @@ from typing import Any, Dict, Optional
 from bs4 import BeautifulSoup
 from wikipedia_async.models.section_models import Section, Paragraph, Table, Link
 import re
+from urllib.parse import urlparse
 
 
 # for type checking
@@ -22,7 +23,7 @@ class DemoTag:
     def children(self) -> Any: ...
 
 
-def parse_wiki_html(html: str) -> list[Section]:
+def parse_wiki_html(html: str, url: str) -> list[Section]:
     soup = BeautifulSoup(html, "html.parser")
     content_div: DemoTag = soup.find("div", {"class": "mw-parser-output"})  # type: ignore
     if not content_div:
@@ -68,9 +69,9 @@ def parse_wiki_html(html: str) -> list[Section]:
             if not paragraph_text:
                 continue
 
-            links = extract_links(elem)
+            links = extract_links(elem, url)
 
-            paragraph = Paragraph(text=paragraph_text, links=links)
+            paragraph = Paragraph(paragraph_text=paragraph_text, links=links)
             prev_section.section_paragraphs.append(paragraph)
 
         elif (name == "div" and elem.find("li")) or name == "ol" or name == "ul":
@@ -78,16 +79,16 @@ def parse_wiki_html(html: str) -> list[Section]:
             if not lis:
                 continue
 
-            paragraph_text = "\n".join(
+            paragraph_text = "\n\n".join(
                 li.get_text(separator=" ", strip=True) for li in lis
             ).strip()
             if not paragraph_text:
                 continue
 
-            links = extract_links(elem)
+            links = extract_links(elem, url)
 
             paragraph = Paragraph(
-                text=paragraph_text,
+                paragraph_text=paragraph_text,
                 list_items=[li.get_text(separator=" ", strip=True) for li in lis],
                 links=links,
             )
@@ -102,23 +103,47 @@ def parse_wiki_html(html: str) -> list[Section]:
             if not caption:
                 caption = prev_section.title
 
-            table = Table(html=table_html, caption=caption, links=extract_links(elem))
+            table = Table(
+                html=table_html, caption=caption, links=extract_links(elem, url)
+            )
             prev_section.section_tables.append(table)
 
     return sections
 
 
-def extract_links(elem):
+def extract_links(elem, url: str) -> list[Link]:
     links = []
+    if url.endswith("/"):
+        url = url[:-1]
+    url_parts = urlparse(url)
     for a in elem.find_all("a", href=True):
         href = a["href"]
-        if href.startswith("#") or href.startswith("/wiki/"):
-            full_url = (
-                "https://en.wikipedia.org" + href
-                if href.startswith("/wiki/")
-                else "https://en.wikipedia.org/wiki/" + href[1:]
-            )
+        full_url = None
+        if href.startswith("/"):
+            full_url = f"{url_parts.scheme}://{url_parts.netloc}{href}"
+        elif href.startswith("http"):
+            full_url = href
+        elif href.startswith("#"):
+            full_url = f"{url}{href}"
+        elif href.startswith("//"):
+            full_url = f"https:{href}"
+        else:
+            if ":" in href:
+                full_url = href
+            else:
+                full_url = f"{url}/{href}"
+
+        if full_url:
             title = a.get("title", "")
-            links.append(Link(full_url, title.strip()))
+            text = a.get_text(strip=True)
+            is_reference = "#cite_note" in href
+            links.append(
+                Link(
+                    full_url,
+                    title.strip(),
+                    text=text.strip(),
+                    is_reference=is_reference,
+                )
+            )
 
     return links

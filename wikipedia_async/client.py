@@ -49,7 +49,6 @@ from wikipedia_async.cache import AsyncTTLCache, BaseCache, cache_key
 from urllib.parse import unquote_plus
 from wikipedia_async.helpers.logger_helpers import logger
 
-
 class WikipediaClient:
     """
     Modern async Wikipedia API client with production-ready features.
@@ -312,7 +311,7 @@ class WikipediaClient:
         except Exception as e:
             logger.error(f"Search failed for query '{query}': {str(e)}")
             raise
-
+    
     async def get_page(
         self,
         title: Optional[str] = None,
@@ -464,12 +463,13 @@ class WikipediaClient:
                 html = await self.get_page_html(title=title, page_id=page_id, lang=lang)
                 wiki_page.html_content = html
                 if html:
-                    helper = SectionHelper.from_html(html)
+                    helper = SectionHelper.from_html(html, url=wiki_page.url)
                     wiki_page.sections = helper.sections
                     wiki_page.tables = [
                         s for sec in helper.sections for s in sec.tables
                     ]
                     wiki_page.helper = helper
+                    wiki_page.links = helper.links
 
             # Add optional data
             if include_images and "images" in page_data:

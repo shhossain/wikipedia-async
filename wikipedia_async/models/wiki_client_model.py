@@ -5,11 +5,11 @@ Pydantic models for Wikipedia API responses and configuration.
 from datetime import datetime
 from decimal import Decimal
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 import re
 
 from wikipedia_async.helpers.section_helpers import Section, SectionHelper
-from wikipedia_async.models.section_models import Table
+from wikipedia_async.models.section_models import Link, Table
 
 
 class Coordinates(BaseModel):
@@ -18,13 +18,19 @@ class Coordinates(BaseModel):
     latitude: Decimal = Field(..., description="Latitude in decimal degrees")
     longitude: Decimal = Field(..., description="Longitude in decimal degrees")
 
-    @validator("latitude")
+    # @validator("latitude")
+    # def validate_latitude(cls, v: Decimal) -> Decimal:
+    #     if not -90 <= v <= 90:
+    #         raise ValueError("Latitude must be between -90 and 90 degrees")
+    #     return v
+
+    @field_validator("latitude")
     def validate_latitude(cls, v: Decimal) -> Decimal:
         if not -90 <= v <= 90:
             raise ValueError("Latitude must be between -90 and 90 degrees")
         return v
 
-    @validator("longitude")
+    @field_validator("longitude")
     def validate_longitude(cls, v: Decimal) -> Decimal:
         if not -180 <= v <= 180:
             raise ValueError("Longitude must be between -180 and 180 degrees")
@@ -53,7 +59,7 @@ class SearchResult(BaseModel):
     timestamp: Optional[datetime] = Field(None, description="Last modification time")
 
     # remove all span tags from snippet
-    @validator("snippet", pre=True, always=True)
+    @field_validator("snippet", mode="before")
     def clean_snippet(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
@@ -122,7 +128,7 @@ class WikiPage(BaseModel):
     # External content
     images: List[str] = Field(default_factory=list, description="Image URLs")
     references: List[str] = Field(default_factory=list, description="External links")
-    links: List[str] = Field(
+    links: List[Link] = Field(
         default_factory=list, description="Internal Wikipedia links"
     )
 
@@ -142,6 +148,7 @@ class WikiPage(BaseModel):
 
     helper: SectionHelper = Field(..., description="Helper for section operations")
     """Helper instance for section operations."""
+
 
 class GeoSearchResult(BaseModel):
     """Geographic search result."""
@@ -187,6 +194,7 @@ class BatchResult(BaseModel):
         """Support indexing and slicing."""
         combined = self.successful
         return combined[index]
+
 
 class HTMLResult(BaseModel):
     title: str = Field(..., description="Page title")

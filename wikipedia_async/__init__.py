@@ -13,15 +13,18 @@ from wikipedia_async.models.wiki_client_model import (
     Coordinates,
     Language,
     GeoSearchResult,
+    SearchResults,
 )
 from wikipedia_async.exceptions import (
     WikipediaException,
+    TimeoutError,
+    NetworkError,
+    RateLimitError,
     PageNotFoundError,
     DisambiguationError,
     RedirectError,
-    RateLimitError,
-    TimeoutError,
-    NetworkError,
+    APIError,
+    ValidationError,
 )
 
 from wikipedia_async.helpers.section_helpers import (
@@ -39,6 +42,7 @@ __all__ = [
     "Coordinates",
     "Language",
     "GeoSearchResult",
+    "SearchResults",
     "WikipediaException",
     "PageNotFoundError",
     "DisambiguationError",
@@ -46,6 +50,8 @@ __all__ = [
     "RateLimitError",
     "TimeoutError",
     "NetworkError",
+    "APIError",
+    "ValidationError",
     "Section",
     "SectionHelper",
     "Table",
